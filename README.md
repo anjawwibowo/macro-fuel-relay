@@ -1,16 +1,27 @@
-# MACRO FUEL RELAY v0.2.10
+# MACRO FUEL RELAY v0.2.12
 
-Diagnostic reliability hotfix.
+Targeted validation patch over v0.2.3.
 
-## What changed
-- Removed Workers Cache API from the BLS acquisition path because Cache API is not functional/persistent on `*.workers.dev` deployments.
-- Kept CPI + Employment as ONE combined BLS API v2 upstream request.
-- Added best-effort in-isolate 24h snapshot reuse to reduce repeated requests when the same Worker isolate handles consecutive calls.
-- Added a top-level exception boundary so unexpected JavaScript exceptions are returned as structured evidence instead of Cloudflare 1101.
-- No BLS key changes. `BLS_API_KEY` remains a Cloudflare Secret.
+## BLS
+- Official BLS Public Data API v2.
+- Secret binding: `BLS_API_KEY`.
+- CPI: `CUUR0000SA0`.
+- Employment: `CES0000000001`.
+- Retries transient 429/5xx.
+- Validates API status, exact series ID, year bounds, and monthly observations.
+- Does not silently convert BLS placeholder values such as `...` into numeric values.
+- Reports both the newest raw monthly observation and newest numeric monthly observation.
+- HTTP 200 + REQUEST_SUCCEEDED can therefore remain observable even when the newest monthly slot is not numerically usable.
+- Raw upstream JSON, SHA-256, and acquisition metadata are returned.
 
-## Important
-In-isolate memory is an optimization only, not durable cache. It may disappear when the Worker isolate is replaced. The response exposes `snapshot_cache_layer` so this is observable.
+## Scope
+Transport-only. No Macro Lab/R8 canonical writes.
 
 
-v0.2.10 hotfix: corrected the outer exception-boundary placement in worker.js. v0.2.9 had an invalid second catch after an inner catch, causing Cloudflare Wrangler deploy failure. Cache API remains removed from the BLS path; BLS CPI + Employment remain one combined request.
+v0.2.12 decision:
+- BLS CPI and Employment are intentionally NOT combined.
+- Each endpoint performs its own single-series BLS v2 request.
+- No Cloudflare Cache API.
+- No in-isolate snapshot/cache.
+- Reliability-first rollback to the proven single-series acquisition path.
+- BLS API key remains in the BLS_API_KEY Cloudflare secret.
