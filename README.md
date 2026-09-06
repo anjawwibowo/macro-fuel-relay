@@ -1,13 +1,27 @@
-TRADER SOTOY — MACRO FUEL RELAY v0.2.2
-Transport-only Cloudflare Worker. Separate from Macro Lab and R8.
+# MACRO FUEL RELAY v0.2.3
 
-CORE routes:
- /health /fuel/bi_rate /fuel/jisdor /fuel/srbi /fuel/us10y
- /fuel/fomc /fuel/bls_cpi /fuel/bls_employment
+Targeted BLS hardening patch for TRADER SOTOY Macro Lab.
 
-BLS uses official BLS flat files instead of the rate-limited Public Data API:
-- CPI-U all items: cu.data.1.AllItems
-- CES total nonfarm employment: ce.data.00a.TotalNonfarm.Employment
+## BLS
+- Uses official BLS Public Data API v2.
+- Secret binding required: `BLS_API_KEY`.
+- No BLS key is stored in this repository.
+- CPI series: `CUUR0000SA0`.
+- Employment series: `CES0000000001`.
+- POST request with 3-year window.
+- Retries transient 429/5xx twice with backoff.
+- Validates BLS `REQUEST_SUCCEEDED`, exact series ID, monthly observations, year bounds, and numeric values.
+- Returns raw upstream JSON plus SHA-256 and acquisition metadata.
+- Returns 502 when upstream or validation fails.
 
-Optional secret: RELAY_TOKEN.
-Macro Lab must independently verify source hostname, status, hash, timestamps, schema, and temporal/lookahead rules.
+## Existing fuel routes
+BI_RATE, US10Y, FOMC, JISDOR, SRBI remain transport-only and unchanged in source scope.
+
+## Cloudflare secret
+Create a Worker secret named exactly:
+`BLS_API_KEY`
+
+Never put the key in GitHub, source code, wrangler.toml, or chat.
+
+## Scope
+Transport-only. This relay does not modify Macro Lab or R8 canonical state.
