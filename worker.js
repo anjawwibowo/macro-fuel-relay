@@ -139,21 +139,25 @@ function validateBlsSeries(series, expectedId) {
   };
 }
 
-function snapshotCacheRequest(startYear, endYear) {
-  const u = new URL("https://macro-fuel-relay.internal/_bls_snapshot");
+function snapshotCacheRequest(baseRequest, startYear, endYear) {
+  // Cache API keys must be based on the actual Worker hostname/zone.
+  // Never use an invented hostname for the cache key.
+  const u = new URL(baseRequest.url);
+  u.pathname = "/__bls_snapshot";
+  u.search = "";
   u.searchParams.set("series", "CUUR0000SA0,CES0000000001");
   u.searchParams.set("startyear", String(startYear));
   u.searchParams.set("endyear", String(endYear));
   return new Request(u.toString(), { method: "GET" });
 }
 
-async function readBlsSnapshotCache(startYear, endYear) {
-  const cache = caches.default;
-  const req = snapshotCacheRequest(startYear, endYear);
-  const hit = await cache.match(req);
-  if (!hit) return null;
-
+async function readBlsSnapshotCache(baseRequest, startYear, endYear) {
   try {
+    const cache = caches.default;
+    const req = snapshotCacheRequest(baseRequest, startYear, endYear);
+    const hit = await cache.match(req);
+    if (!hit) return null;
+
     const obj = await hit.json();
     if (!obj || obj.snapshot_version !== "bls-combined-v1") return null;
 
@@ -173,27 +177,35 @@ async function readBlsSnapshotCache(startYear, endYear) {
       cache_age_seconds: Math.floor(ageSeconds)
     };
   } catch {
+    // Cache is an optimization. A cache failure must never become a
+    // Worker exception or hide a valid upstream acquisition.
     return null;
   }
 }
 
-async function writeBlsSnapshotCache(snapshot, startYear, endYear) {
-  const cache = caches.default;
-  const req = snapshotCacheRequest(startYear, endYear);
+async function writeBlsSnapshotCache(baseRequest, snapshot, startYear, endYear, executionCtx) {
+  try {
+    const cache = caches.default;
+    const req = snapshotCacheRequest(baseRequest, startYear, endYear);
 
-  const body = JSON.stringify(snapshot);
-  const response = new Response(body, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/json",
-      "Cache-Control": `public, max-age=${BLS_CACHE_TTL_SECONDS}`
-    }
-  });
+    const body = JSON.stringify(snapshot);
+    const response = new Response(body, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": `public, max-age=${BLS_CACHE_TTL_SECONDS}`
+      }
+    });
 
-  await cache.put(req, response);
+    // Do not make the client wait for cache persistence.
+    executionCtx.waitUntil(cache.put(req, response));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-async function fetchBlsSnapshot(env) {
+async function fetchBlsSnapshot(env, baseRequest, executionCtx) {
   if (!env.BLS_API_KEY) {
     return {
       ok: false,
@@ -208,7 +220,7 @@ async function fetchBlsSnapshot(env) {
   // Cache-first: one combined upstream request can satisfy both BLS
   // consumers. This is the Macro Lab equivalent of R8's provider-session
   // reuse + cache-first principle.
-  const cached = await readBlsSnapshotCache(startYear, endYear);
+  const cached = await readBlsSnapshotCache(baseRequest, startYear, endYear);
   if (cached) {
     return cached;
   }
@@ -429,7 +441,7 @@ function blsEndpointResponse(snapshot, sourceId) {
 }
 
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, executionCtx) {
     const u = new URL(req.url);
 
     if (req.method !== "GET") {
@@ -463,7 +475,7 @@ export default {
     }
 
     if (sourceId === "bls_cpi" || sourceId === "bls_employment") {
-      const snapshot = await fetchBlsSnapshot(env);
+      const snapshot = await fetchBlsSnapshot(env, req, executionCtx);
       return blsEndpointResponse(snapshot, sourceId);
     }
 
