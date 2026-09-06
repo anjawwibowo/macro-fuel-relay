@@ -246,7 +246,7 @@ async function fetchBlsSnapshot(env, baseRequest, executionCtx) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.5"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.7"
         },
         body: JSON.stringify(payload)
       });
@@ -372,7 +372,7 @@ async function fetchBlsSnapshot(env, baseRequest, executionCtx) {
       };
 
       try {
-        await writeBlsSnapshotCache(snapshot, startYear, endYear);
+        await writeBlsSnapshotCache(baseRequest, snapshot, startYear, endYear, executionCtx);
       } catch {
         // Cache failure is observable in the response but does not turn a
         // valid upstream acquisition into a false failure.
@@ -452,7 +452,7 @@ export default {
       return jsonResponse({
         ok: true,
         service: "macro-fuel-relay",
-        version: "0.2.5"
+        version: "0.2.7"
       });
     }
 
@@ -485,7 +485,7 @@ export default {
     try {
       const r = await fetch(url, {
         headers: {
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.5"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.7"
         }
       });
       const body = await r.text();
