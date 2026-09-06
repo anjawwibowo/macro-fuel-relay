@@ -79,7 +79,7 @@ async function fetchBlsSnapshot(env) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.9"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.10"
         },
         body: JSON.stringify(payload)
       });
@@ -314,7 +314,7 @@ export default {
     try {
       const r = await fetch(url, {
         headers: {
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.9"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.10"
         }
       });
       const body = await r.text();
@@ -340,6 +340,7 @@ export default {
         acquired_at: acquiredAt,
         error: "upstream_fetch_failed"
       }, 502);
+    }
     } catch (e) {
       return jsonResponse({
         ok: false,
