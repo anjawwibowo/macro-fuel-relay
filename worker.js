@@ -22,195 +22,14 @@ const BLS_SERIES = {
   bls_employment: "CES0000000001"
 };
 
-// BLS data are low-frequency macro observations. Cache the combined
-// snapshot for 24h to avoid repeated upstream requests while retaining
-// a deterministic freshness boundary. Macro Lab remains responsible for
-// its own canonical freshness/revision rules.
-const BLS_CACHE_TTL_SECONDS = 86400;
+// BLS data are low-frequency macro observations.
+// workers.dev does not provide functional Cache API persistence, so this
+// relay uses a best-effort in-isolate snapshot only. The upstream request
+// remains one combined request for CPI + Employment.
+const BLS_MEMORY_TTL_SECONDS = 86400;
+let blsMemorySnapshot = null;
 
-async function sha256(s) {
-  const b = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(s)
-  );
-  return [...new Uint8Array(b)]
-    .map(x => x.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function jsonResponse(obj, status = 200, extraHeaders = {}) {
-  return Response.json(obj, {
-    status,
-    headers: {
-      "Cache-Control": "no-store",
-      ...extraHeaders
-    }
-  });
-}
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function isMonthly(period) {
-  return /^M(?:0[1-9]|1[0-2])$/.test(String(period));
-}
-
-function numericValue(value) {
-  if (value === undefined || value === null) return null;
-  const s = String(value).trim().replace(/,/g, "");
-  if (s === "" || s === "..." || s === "-") return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
-
-function validateBlsSeries(series, expectedId) {
-  if (!series || series.seriesID !== expectedId) {
-    return {
-      ok: false,
-      series_id: expectedId,
-      reason: "unexpected_series_id"
-    };
-  }
-
-  const data = Array.isArray(series.data) ? series.data : [];
-  if (data.length === 0) {
-    return {
-      ok: false,
-      series_id: expectedId,
-      reason: "no_observations"
-    };
-  }
-
-  const currentYear = new Date().getUTCFullYear();
-  const monthly = data.filter(x => isMonthly(x.period));
-
-  for (const row of data) {
-    if (!/^\d{4}$/.test(String(row.year))) {
-      return {
-        ok: false,
-        series_id: expectedId,
-        reason: "invalid_year"
-      };
-    }
-    if (Number(row.year) > currentYear) {
-      return {
-        ok: false,
-        series_id: expectedId,
-        reason: "future_year_observation"
-      };
-    }
-  }
-
-  if (monthly.length === 0) {
-    return {
-      ok: false,
-      series_id: expectedId,
-      reason: "no_monthly_observations"
-    };
-  }
-
-  const numericMonthly = monthly
-    .map(row => ({
-      ...row,
-      numeric_value: numericValue(row.value)
-    }))
-    .filter(row => row.numeric_value !== null);
-
-  if (numericMonthly.length === 0) {
-    return {
-      ok: false,
-      series_id: expectedId,
-      reason: "no_numeric_monthly_observations"
-    };
-  }
-
-  const latestRaw = monthly[0];
-  const latestNumeric = numericMonthly[0];
-
-  return {
-    ok: true,
-    series_id: expectedId,
-    observation_count: monthly.length,
-    numeric_observation_count: numericMonthly.length,
-    latest_observation_raw: latestRaw,
-    latest_numeric_observation: latestNumeric,
-    latest_observation_usable: numericValue(latestRaw.value) !== null
-  };
-}
-
-function snapshotCacheRequest(baseRequest, startYear, endYear) {
-  // Cache API keys must be based on the actual Worker hostname/zone.
-  // Never use an invented hostname for the cache key.
-  const u = new URL(baseRequest.url);
-  u.pathname = "/__bls_snapshot";
-  u.search = "";
-  u.searchParams.set("series", "CUUR0000SA0,CES0000000001");
-  u.searchParams.set("startyear", String(startYear));
-  u.searchParams.set("endyear", String(endYear));
-  return new Request(u.toString(), { method: "GET" });
-}
-
-async function readBlsSnapshotCache(baseRequest, startYear, endYear) {
-  try {
-    const cache = caches.default;
-    const req = snapshotCacheRequest(baseRequest, startYear, endYear);
-    const hit = await cache.match(req);
-    if (!hit) return null;
-
-    const obj = await hit.json();
-    if (!obj || obj.snapshot_version !== "bls-combined-v1") return null;
-
-    const acquiredAt = Date.parse(obj.acquired_at || "");
-    if (!Number.isFinite(acquiredAt)) return null;
-
-    const ageSeconds = Math.max(
-      0,
-      (Date.now() - acquiredAt) / 1000
-    );
-
-    if (ageSeconds > BLS_CACHE_TTL_SECONDS) return null;
-
-    return {
-      ...obj,
-      cache_hit: true,
-      cache_age_seconds: Math.floor(ageSeconds)
-    };
-  } catch {
-    // Cache is an optimization. A cache failure must never become a
-    // Worker exception or hide a valid upstream acquisition.
-    return null;
-  }
-}
-
-async function writeBlsSnapshotCache(baseRequest, snapshot, startYear, endYear, executionCtx) {
-  try {
-    const cache = caches.default;
-    const req = snapshotCacheRequest(baseRequest, startYear, endYear);
-
-    const body = JSON.stringify(snapshot);
-    const response = new Response(body, {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Cache-Control": `public, max-age=${BLS_CACHE_TTL_SECONDS}`
-      }
-    });
-
-    // Cache persistence is best-effort. The rejection must be consumed
-    // explicitly: waitUntil() does not turn an async rejection into a
-    // synchronous throw that the surrounding try/catch can catch.
-    const writePromise = cache.put(req, response).catch(() => undefined);
-    if (executionCtx && typeof executionCtx.waitUntil === "function") {
-      executionCtx.waitUntil(writePromise);
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function fetchBlsSnapshot(env, baseRequest, executionCtx) {
+async function fetchBlsSnapshot(env) {
   if (!env.BLS_API_KEY) {
     return {
       ok: false,
@@ -222,12 +41,21 @@ async function fetchBlsSnapshot(env, baseRequest, executionCtx) {
   const endYear = now.getUTCFullYear();
   const startYear = endYear - 2;
 
-  // Cache-first: one combined upstream request can satisfy both BLS
-  // consumers. This is the Macro Lab equivalent of R8's provider-session
-  // reuse + cache-first principle.
-  const cached = await readBlsSnapshotCache(baseRequest, startYear, endYear);
-  if (cached) {
-    return cached;
+  if (blsMemorySnapshot &&
+      blsMemorySnapshot.request_start_year === String(startYear) &&
+      blsMemorySnapshot.request_end_year === String(endYear)) {
+    const acquiredMs = Date.parse(blsMemorySnapshot.acquired_at || "");
+    if (Number.isFinite(acquiredMs)) {
+      const age = Math.max(0, (Date.now() - acquiredMs) / 1000);
+      if (age <= BLS_MEMORY_TTL_SECONDS) {
+        return {
+          ...blsMemorySnapshot,
+          cache_hit: true,
+          cache_age_seconds: Math.floor(age),
+          cache_layer: "isolate_memory"
+        };
+      }
+    }
   }
 
   const payload = {
@@ -251,7 +79,7 @@ async function fetchBlsSnapshot(env, baseRequest, executionCtx) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.8"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.9"
         },
         body: JSON.stringify(payload)
       });
@@ -376,18 +204,10 @@ async function fetchBlsSnapshot(env, baseRequest, executionCtx) {
         body
       };
 
-      try {
-        snapshot.cache_write_ok = await writeBlsSnapshotCache(
-          baseRequest, snapshot, startYear, endYear, executionCtx
-        );
-      } catch {
-        // Cache failure is observable but never invalidates the acquired
-        // upstream snapshot.
-        snapshot.cache_write_ok = false;
-      }
-
       snapshot.cache_hit = false;
       snapshot.cache_age_seconds = 0;
+      snapshot.cache_layer = "none";
+      blsMemorySnapshot = snapshot;
       return snapshot;
     } catch (e) {
       lastBody = String(e?.message || e);
@@ -439,6 +259,7 @@ function blsEndpointResponse(snapshot, sourceId) {
     snapshot_version: snapshot.snapshot_version,
     snapshot_cache_hit: snapshot.cache_hit === true,
     snapshot_cache_age_seconds: snapshot.cache_age_seconds ?? 0,
+    snapshot_cache_layer: snapshot.cache_layer || "none",
     snapshot_series_ids: snapshot.series_ids,
     body_bytes: snapshot.body_bytes,
     body_sha256: snapshot.body_sha256,
@@ -449,6 +270,7 @@ function blsEndpointResponse(snapshot, sourceId) {
 
 export default {
   async fetch(req, env, executionCtx) {
+    try {
     const u = new URL(req.url);
 
     if (req.method !== "GET") {
@@ -459,7 +281,7 @@ export default {
       return jsonResponse({
         ok: true,
         service: "macro-fuel-relay",
-        version: "0.2.8"
+        version: "0.2.9"
       });
     }
 
@@ -482,7 +304,7 @@ export default {
     }
 
     if (sourceId === "bls_cpi" || sourceId === "bls_employment") {
-      const snapshot = await fetchBlsSnapshot(env, req, executionCtx);
+      const snapshot = await fetchBlsSnapshot(env);
       return blsEndpointResponse(snapshot, sourceId);
     }
 
@@ -492,7 +314,7 @@ export default {
     try {
       const r = await fetch(url, {
         headers: {
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.8"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.9"
         }
       });
       const body = await r.text();
@@ -518,6 +340,14 @@ export default {
         acquired_at: acquiredAt,
         error: "upstream_fetch_failed"
       }, 502);
+    } catch (e) {
+      return jsonResponse({
+        ok: false,
+        error: "worker_exception",
+        error_name: e?.name || "Error",
+        error_message: String(e?.message || e),
+        error_stack: String(e?.stack || "").slice(0, 2000)
+      }, 500);
     }
   }
 };

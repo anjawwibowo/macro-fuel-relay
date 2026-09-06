@@ -1,24 +1,13 @@
-# MACRO FUEL RELAY v0.2.6
+# MACRO FUEL RELAY v0.2.9
 
-Targeted hotfix over v0.2.5.
+Diagnostic reliability hotfix.
 
-## Root cause fixed
-v0.2.5 used an invented hostname (`macro-fuel-relay.internal`) as the
-Cache API key. The Cache API key is now derived from the actual incoming
-Worker URL/hostname, following Cloudflare's documented Cache API pattern.
+## What changed
+- Removed Workers Cache API from the BLS acquisition path because Cache API is not functional/persistent on `*.workers.dev` deployments.
+- Kept CPI + Employment as ONE combined BLS API v2 upstream request.
+- Added best-effort in-isolate 24h snapshot reuse to reduce repeated requests when the same Worker isolate handles consecutive calls.
+- Added a top-level exception boundary so unexpected JavaScript exceptions are returned as structured evidence instead of Cloudflare 1101.
+- No BLS key changes. `BLS_API_KEY` remains a Cloudflare Secret.
 
-## Safety behavior
-- Cache read failures are treated as cache misses, never Worker-fatal.
-- Cache writes use `executionCtx.waitUntil()`.
-- A cache failure can no longer turn a valid BLS upstream response into
-  Cloudflare Error 1101.
-
-## BLS behavior
-- CPI + Employment remain ONE combined BLS API v2 request.
-- Snapshot is reused for both endpoints.
-- 24h snapshot TTL.
-- `snapshot_cache_hit` remains observable.
-- BLS API key remains a Cloudflare Secret named `BLS_API_KEY`.
-
-## Scope
-Transport-only. No Macro Lab/R8 canonical writes.
+## Important
+In-isolate memory is an optimization only, not durable cache. It may disappear when the Worker isolate is replaced. The response exposes `snapshot_cache_layer` so this is observable.
