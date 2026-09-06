@@ -150,7 +150,7 @@ async function fetchBls(sourceId, env) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.12"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
         },
         body: JSON.stringify(payload)
       });
@@ -257,7 +257,7 @@ export default {
       return jsonResponse({
         ok: true,
         service: "macro-fuel-relay",
-        version: "0.2.12"
+        version: "0.2.13"
       });
     }
 
@@ -289,7 +289,7 @@ export default {
     try {
       const r = await fetch(url, {
         headers: {
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.12"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
         }
       });
       const body = await r.text();
