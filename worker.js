@@ -1,8 +1,7 @@
 const SOURCES = {
   bi_rate: "https://www.bi.go.id/id/statistik/indikator/bi-rate.aspx",
   us10y: "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_yield_curve&field_tdr_date_value=2026",
-  bls_cpi: "https://api.bls.gov/publicAPI/v2/timeseries/data/",
-  bls_employment: "https://api.bls.gov/publicAPI/v2/timeseries/data/",
+  bls: "https://api.bls.gov/publicAPI/v2/timeseries/data/",
   fomc: "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm",
   jisdor: "https://www.bi.go.id/biwebservice/wskursbi.asmx/getSubKursJisdor1",
   srbi: "https://www.bi.go.id/id/fungsi-utama/moneter/operasi-moneter/Default.aspx"
@@ -23,6 +22,12 @@ const BLS_SERIES = {
   bls_employment: "CES0000000001"
 };
 
+// BLS data are low-frequency macro observations. Cache the combined
+// snapshot for 24h to avoid repeated upstream requests while retaining
+// a deterministic freshness boundary. Macro Lab remains responsible for
+// its own canonical freshness/revision rules.
+const BLS_CACHE_TTL_SECONDS = 86400;
+
 async function sha256(s) {
   const b = await crypto.subtle.digest(
     "SHA-256",
@@ -33,15 +38,18 @@ async function sha256(s) {
     .join("");
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function jsonResponse(obj, status = 200) {
+function jsonResponse(obj, status = 200, extraHeaders = {}) {
   return Response.json(obj, {
     status,
-    headers: { "Cache-Control": "no-store" }
+    headers: {
+      "Cache-Control": "no-store",
+      ...extraHeaders
+    }
   });
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function isMonthly(period) {
@@ -56,61 +64,73 @@ function numericValue(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-function validateBlsPayload(sourceId, payload) {
-  const expected = BLS_SERIES[sourceId];
-
-  if (!payload || payload.status !== "REQUEST_SUCCEEDED") {
-    return { ok: false, reason: "bls_api_status_not_succeeded" };
+function validateBlsSeries(series, expectedId) {
+  if (!series || series.seriesID !== expectedId) {
+    return {
+      ok: false,
+      series_id: expectedId,
+      reason: "unexpected_series_id"
+    };
   }
 
-  const series = payload?.Results?.series;
-  if (!Array.isArray(series) || series.length !== 1) {
-    return { ok: false, reason: "unexpected_series_shape" };
-  }
-
-  if (series[0]?.seriesID !== expected) {
-    return { ok: false, reason: "unexpected_series_id" };
-  }
-
-  const data = series[0]?.data;
-  if (!Array.isArray(data) || data.length === 0) {
-    return { ok: false, reason: "no_observations" };
+  const data = Array.isArray(series.data) ? series.data : [];
+  if (data.length === 0) {
+    return {
+      ok: false,
+      series_id: expectedId,
+      reason: "no_observations"
+    };
   }
 
   const currentYear = new Date().getUTCFullYear();
   const monthly = data.filter(x => isMonthly(x.period));
 
-  if (monthly.length === 0) {
-    return { ok: false, reason: "no_monthly_observations" };
-  }
-
   for (const row of data) {
     if (!/^\d{4}$/.test(String(row.year))) {
-      return { ok: false, reason: "invalid_year" };
+      return {
+        ok: false,
+        series_id: expectedId,
+        reason: "invalid_year"
+      };
     }
     if (Number(row.year) > currentYear) {
-      return { ok: false, reason: "future_year_observation" };
+      return {
+        ok: false,
+        series_id: expectedId,
+        reason: "future_year_observation"
+      };
     }
+  }
+
+  if (monthly.length === 0) {
+    return {
+      ok: false,
+      series_id: expectedId,
+      reason: "no_monthly_observations"
+    };
   }
 
   const numericMonthly = monthly
-    .map(row => ({ ...row, numeric_value: numericValue(row.value) }))
+    .map(row => ({
+      ...row,
+      numeric_value: numericValue(row.value)
+    }))
     .filter(row => row.numeric_value !== null);
 
   if (numericMonthly.length === 0) {
-    return { ok: false, reason: "no_numeric_monthly_observations" };
+    return {
+      ok: false,
+      series_id: expectedId,
+      reason: "no_numeric_monthly_observations"
+    };
   }
 
-  // BLS can return a successful response containing a placeholder such as
-  // "..." for a not-yet-available monthly observation. Do not silently
-  // convert that into a value. Keep it visible and use the newest numeric
-  // observation as the transport-level usable observation.
   const latestRaw = monthly[0];
   const latestNumeric = numericMonthly[0];
 
   return {
     ok: true,
-    series_id: expected,
+    series_id: expectedId,
     observation_count: monthly.length,
     numeric_observation_count: numericMonthly.length,
     latest_observation_raw: latestRaw,
@@ -119,21 +139,85 @@ function validateBlsPayload(sourceId, payload) {
   };
 }
 
-async function fetchBls(sourceId, env) {
+function snapshotCacheRequest(startYear, endYear) {
+  const u = new URL("https://macro-fuel-relay.internal/_bls_snapshot");
+  u.searchParams.set("series", "CUUR0000SA0,CES0000000001");
+  u.searchParams.set("startyear", String(startYear));
+  u.searchParams.set("endyear", String(endYear));
+  return new Request(u.toString(), { method: "GET" });
+}
+
+async function readBlsSnapshotCache(startYear, endYear) {
+  const cache = caches.default;
+  const req = snapshotCacheRequest(startYear, endYear);
+  const hit = await cache.match(req);
+  if (!hit) return null;
+
+  try {
+    const obj = await hit.json();
+    if (!obj || obj.snapshot_version !== "bls-combined-v1") return null;
+
+    const acquiredAt = Date.parse(obj.acquired_at || "");
+    if (!Number.isFinite(acquiredAt)) return null;
+
+    const ageSeconds = Math.max(
+      0,
+      (Date.now() - acquiredAt) / 1000
+    );
+
+    if (ageSeconds > BLS_CACHE_TTL_SECONDS) return null;
+
+    return {
+      ...obj,
+      cache_hit: true,
+      cache_age_seconds: Math.floor(ageSeconds)
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeBlsSnapshotCache(snapshot, startYear, endYear) {
+  const cache = caches.default;
+  const req = snapshotCacheRequest(startYear, endYear);
+
+  const body = JSON.stringify(snapshot);
+  const response = new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json",
+      "Cache-Control": `public, max-age=${BLS_CACHE_TTL_SECONDS}`
+    }
+  });
+
+  await cache.put(req, response);
+}
+
+async function fetchBlsSnapshot(env) {
   if (!env.BLS_API_KEY) {
-    return jsonResponse({
+    return {
       ok: false,
-      source_id: sourceId,
       error: "missing_bls_api_key"
-    }, 500);
+    };
   }
 
   const now = new Date();
   const endYear = now.getUTCFullYear();
   const startYear = endYear - 2;
 
+  // Cache-first: one combined upstream request can satisfy both BLS
+  // consumers. This is the Macro Lab equivalent of R8's provider-session
+  // reuse + cache-first principle.
+  const cached = await readBlsSnapshotCache(startYear, endYear);
+  if (cached) {
+    return cached;
+  }
+
   const payload = {
-    seriesid: [BLS_SERIES[sourceId]],
+    seriesid: [
+      BLS_SERIES.bls_cpi,
+      BLS_SERIES.bls_employment
+    ],
     startyear: String(startYear),
     endyear: String(endYear),
     registrationkey: env.BLS_API_KEY
@@ -146,11 +230,11 @@ async function fetchBls(sourceId, env) {
     const acquiredAt = new Date().toISOString();
 
     try {
-      const r = await fetch(SOURCES[sourceId], {
+      const r = await fetch(SOURCES.bls, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.4"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.5"
         },
         body: JSON.stringify(payload)
       });
@@ -174,57 +258,118 @@ async function fetchBls(sourceId, env) {
       }
 
       if (!r.ok) {
-        return jsonResponse({
+        return {
           ok: false,
-          source_id: sourceId,
-          dataset_id: sourceId,
-          source_url: SOURCES[sourceId],
+          source_id: "bls_combined",
+          dataset_id: "bls_combined",
+          source_url: SOURCES.bls,
           status_code: r.status,
           acquired_at: acquiredAt,
           body_sha256: await sha256(body),
           content_type: r.headers.get("content-type") || "",
           error: "bls_upstream_http_error",
           upstream_body: body.slice(0, 2000)
-        }, 502);
+        };
       }
 
-      const validation = validateBlsPayload(sourceId, parsed);
-      if (!validation.ok) {
-        return jsonResponse({
+      if (!parsed || parsed.status !== "REQUEST_SUCCEEDED") {
+        return {
           ok: false,
-          source_id: sourceId,
-          dataset_id: sourceId,
-          source_url: SOURCES[sourceId],
+          source_id: "bls_combined",
+          dataset_id: "bls_combined",
+          source_url: SOURCES.bls,
           status_code: r.status,
           acquired_at: acquiredAt,
           body_sha256: await sha256(body),
           content_type: r.headers.get("content-type") || "",
-          error: validation.reason,
+          error: "bls_api_status_not_succeeded",
           upstream_status: parsed?.status || null,
           upstream_message: parsed?.message || []
-        }, 502);
+        };
       }
 
-      return jsonResponse({
+      const series = Array.isArray(parsed?.Results?.series)
+        ? parsed.Results.series
+        : [];
+
+      if (series.length !== 2) {
+        return {
+          ok: false,
+          source_id: "bls_combined",
+          dataset_id: "bls_combined",
+          source_url: SOURCES.bls,
+          status_code: r.status,
+          acquired_at: acquiredAt,
+          body_sha256: await sha256(body),
+          content_type: r.headers.get("content-type") || "",
+          error: "unexpected_combined_series_shape",
+          returned_series_ids: series.map(x => x?.seriesID || null)
+        };
+      }
+
+      const byId = Object.fromEntries(
+        series.map(x => [x?.seriesID, x])
+      );
+
+      const cpi = validateBlsSeries(
+        byId[BLS_SERIES.bls_cpi],
+        BLS_SERIES.bls_cpi
+      );
+      const employment = validateBlsSeries(
+        byId[BLS_SERIES.bls_employment],
+        BLS_SERIES.bls_employment
+      );
+
+      if (!cpi.ok || !employment.ok) {
+        return {
+          ok: false,
+          source_id: "bls_combined",
+          dataset_id: "bls_combined",
+          source_url: SOURCES.bls,
+          status_code: r.status,
+          acquired_at: acquiredAt,
+          body_sha256: await sha256(body),
+          content_type: r.headers.get("content-type") || "",
+          error: "bls_series_validation_failed",
+          cpi,
+          employment
+        };
+      }
+
+      const snapshot = {
+        snapshot_version: "bls-combined-v1",
         ok: true,
-        source_id: sourceId,
-        dataset_id: sourceId,
-        series_id: validation.series_id,
-        source_url: SOURCES[sourceId],
+        source_id: "bls_combined",
+        dataset_id: "bls_combined",
+        source_url: SOURCES.bls,
         status_code: r.status,
+        upstream_status: parsed.status,
         acquired_at: acquiredAt,
         request_start_year: String(startYear),
         request_end_year: String(endYear),
-        observation_count: validation.observation_count,
-        numeric_observation_count: validation.numeric_observation_count,
-        latest_observation_raw: validation.latest_observation_raw,
-        latest_numeric_observation: validation.latest_numeric_observation,
-        latest_observation_usable: validation.latest_observation_usable,
+        series_ids: [
+          BLS_SERIES.bls_cpi,
+          BLS_SERIES.bls_employment
+        ],
+        cpi,
+        employment,
         body_bytes: new TextEncoder().encode(body).length,
         body_sha256: await sha256(body),
         content_type: r.headers.get("content-type") || "",
         body
-      });
+      };
+
+      try {
+        await writeBlsSnapshotCache(snapshot, startYear, endYear);
+      } catch {
+        // Cache failure is observable in the response but does not turn a
+        // valid upstream acquisition into a false failure.
+        snapshot.cache_write_ok = false;
+      }
+
+      snapshot.cache_hit = false;
+      snapshot.cache_age_seconds = 0;
+      return snapshot;
     } catch (e) {
       lastBody = String(e?.message || e);
       if (attempt < 2) {
@@ -234,15 +379,53 @@ async function fetchBls(sourceId, env) {
     }
   }
 
-  return jsonResponse({
+  return {
     ok: false,
-    source_id: sourceId,
-    dataset_id: sourceId,
-    source_url: SOURCES[sourceId],
+    source_id: "bls_combined",
+    dataset_id: "bls_combined",
+    source_url: SOURCES.bls,
     status_code: lastStatus,
     error: "upstream_fetch_failed_after_retries",
     upstream_body: lastBody.slice(0, 2000)
-  }, 502);
+  };
+}
+
+function blsEndpointResponse(snapshot, sourceId) {
+  if (!snapshot?.ok) {
+    return jsonResponse({
+      ...snapshot,
+      source_id: sourceId,
+      dataset_id: sourceId
+    }, 502);
+  }
+
+  const selected = snapshot[sourceId];
+
+  return jsonResponse({
+    ok: true,
+    source_id: sourceId,
+    dataset_id: sourceId,
+    series_id: selected.series_id,
+    source_url: snapshot.source_url,
+    status_code: snapshot.status_code,
+    upstream_status: snapshot.upstream_status,
+    acquired_at: snapshot.acquired_at,
+    request_start_year: snapshot.request_start_year,
+    request_end_year: snapshot.request_end_year,
+    observation_count: selected.observation_count,
+    numeric_observation_count: selected.numeric_observation_count,
+    latest_observation_raw: selected.latest_observation_raw,
+    latest_numeric_observation: selected.latest_numeric_observation,
+    latest_observation_usable: selected.latest_observation_usable,
+    snapshot_version: snapshot.snapshot_version,
+    snapshot_cache_hit: snapshot.cache_hit === true,
+    snapshot_cache_age_seconds: snapshot.cache_age_seconds ?? 0,
+    snapshot_series_ids: snapshot.series_ids,
+    body_bytes: snapshot.body_bytes,
+    body_sha256: snapshot.body_sha256,
+    content_type: snapshot.content_type,
+    body: snapshot.body
+  });
 }
 
 export default {
@@ -257,7 +440,7 @@ export default {
       return jsonResponse({
         ok: true,
         service: "macro-fuel-relay",
-        version: "0.2.4"
+        version: "0.2.5"
       });
     }
 
@@ -280,7 +463,8 @@ export default {
     }
 
     if (sourceId === "bls_cpi" || sourceId === "bls_employment") {
-      return fetchBls(sourceId, env);
+      const snapshot = await fetchBlsSnapshot(env);
+      return blsEndpointResponse(snapshot, sourceId);
     }
 
     const url = SOURCES[sourceId];
@@ -289,7 +473,7 @@ export default {
     try {
       const r = await fetch(url, {
         headers: {
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.4"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.5"
         }
       });
       const body = await r.text();
@@ -306,7 +490,7 @@ export default {
         content_type: r.headers.get("content-type") || "",
         body
       }, r.ok ? 200 : 502);
-    } catch (e) {
+    } catch {
       return jsonResponse({
         ok: false,
         source_id: sourceId,

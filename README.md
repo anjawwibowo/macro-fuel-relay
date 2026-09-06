@@ -1,18 +1,32 @@
-# MACRO FUEL RELAY v0.2.4
+# MACRO FUEL RELAY v0.2.5
 
-Targeted validation patch over v0.2.3.
+Targeted BLS resource-efficiency patch based on the proven R8 TVDatafeed pattern.
+
+## What changed
+- CPI and Employment now share ONE combined BLS API v2 request.
+- Cache-first snapshot reuse.
+- The combined snapshot contains both series:
+  - CUUR0000SA0
+  - CES0000000001
+- `/fuel/bls_cpi` and `/fuel/bls_employment` consume the same cached snapshot.
+- Response exposes `snapshot_cache_hit` so request reuse is directly observable.
+- 24h edge snapshot TTL.
+- Raw BLS response, SHA-256, acquisition time, request window, and validation evidence are retained.
+- Existing non-BLS routes remain transport-only.
+
+## R8 adaptation
+Adapted principles, not R8 code:
+1. cache-first
+2. reuse one upstream resource
+3. provider fetch only when cache is unusable
+4. expose cache/provider evidence
+5. validity remains the first trust boundary
 
 ## BLS
-- Official BLS Public Data API v2.
-- Secret binding: `BLS_API_KEY`.
-- CPI: `CUUR0000SA0`.
-- Employment: `CES0000000001`.
-- Retries transient 429/5xx.
-- Validates API status, exact series ID, year bounds, and monthly observations.
-- Does not silently convert BLS placeholder values such as `...` into numeric values.
-- Reports both the newest raw monthly observation and newest numeric monthly observation.
-- HTTP 200 + REQUEST_SUCCEEDED can therefore remain observable even when the newest monthly slot is not numerically usable.
-- Raw upstream JSON, SHA-256, and acquisition metadata are returned.
+Secret required:
+`BLS_API_KEY`
+
+Never store the API key in GitHub, wrangler.toml, source code, or chat.
 
 ## Scope
 Transport-only. No Macro Lab/R8 canonical writes.
