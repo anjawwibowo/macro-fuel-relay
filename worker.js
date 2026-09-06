@@ -197,8 +197,13 @@ async function writeBlsSnapshotCache(baseRequest, snapshot, startYear, endYear, 
       }
     });
 
-    // Do not make the client wait for cache persistence.
-    executionCtx.waitUntil(cache.put(req, response));
+    // Cache persistence is best-effort. The rejection must be consumed
+    // explicitly: waitUntil() does not turn an async rejection into a
+    // synchronous throw that the surrounding try/catch can catch.
+    const writePromise = cache.put(req, response).catch(() => undefined);
+    if (executionCtx && typeof executionCtx.waitUntil === "function") {
+      executionCtx.waitUntil(writePromise);
+    }
     return true;
   } catch {
     return false;
@@ -246,7 +251,7 @@ async function fetchBlsSnapshot(env, baseRequest, executionCtx) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.7"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.8"
         },
         body: JSON.stringify(payload)
       });
@@ -372,10 +377,12 @@ async function fetchBlsSnapshot(env, baseRequest, executionCtx) {
       };
 
       try {
-        await writeBlsSnapshotCache(baseRequest, snapshot, startYear, endYear, executionCtx);
+        snapshot.cache_write_ok = await writeBlsSnapshotCache(
+          baseRequest, snapshot, startYear, endYear, executionCtx
+        );
       } catch {
-        // Cache failure is observable in the response but does not turn a
-        // valid upstream acquisition into a false failure.
+        // Cache failure is observable but never invalidates the acquired
+        // upstream snapshot.
         snapshot.cache_write_ok = false;
       }
 
@@ -452,7 +459,7 @@ export default {
       return jsonResponse({
         ok: true,
         service: "macro-fuel-relay",
-        version: "0.2.7"
+        version: "0.2.8"
       });
     }
 
@@ -485,7 +492,7 @@ export default {
     try {
       const r = await fetch(url, {
         headers: {
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.7"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.8"
         }
       });
       const body = await r.text();
