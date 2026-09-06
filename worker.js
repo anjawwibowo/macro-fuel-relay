@@ -44,6 +44,18 @@ function jsonResponse(obj, status = 200) {
   });
 }
 
+function isMonthly(period) {
+  return /^M(?:0[1-9]|1[0-2])$/.test(String(period));
+}
+
+function numericValue(value) {
+  if (value === undefined || value === null) return null;
+  const s = String(value).trim().replace(/,/g, "");
+  if (s === "" || s === "..." || s === "-") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
 function validateBlsPayload(sourceId, payload) {
   const expected = BLS_SERIES[sourceId];
 
@@ -66,6 +78,12 @@ function validateBlsPayload(sourceId, payload) {
   }
 
   const currentYear = new Date().getUTCFullYear();
+  const monthly = data.filter(x => isMonthly(x.period));
+
+  if (monthly.length === 0) {
+    return { ok: false, reason: "no_monthly_observations" };
+  }
+
   for (const row of data) {
     if (!/^\d{4}$/.test(String(row.year))) {
       return { ok: false, reason: "invalid_year" };
@@ -73,27 +91,31 @@ function validateBlsPayload(sourceId, payload) {
     if (Number(row.year) > currentYear) {
       return { ok: false, reason: "future_year_observation" };
     }
-    if (!/^M(?:0[1-9]|1[0-2])$/.test(String(row.period))) {
-      continue;
-    }
-    if (row.value === undefined || row.value === null || row.value === "") {
-      return { ok: false, reason: "empty_observation_value" };
-    }
-    if (!Number.isFinite(Number(String(row.value).replace(/,/g, "")))) {
-      return { ok: false, reason: "non_numeric_observation_value" };
-    }
   }
 
-  const monthly = data.filter(x => /^M(?:0[1-9]|1[0-2])$/.test(String(x.period)));
-  if (monthly.length === 0) {
-    return { ok: false, reason: "no_monthly_observations" };
+  const numericMonthly = monthly
+    .map(row => ({ ...row, numeric_value: numericValue(row.value) }))
+    .filter(row => row.numeric_value !== null);
+
+  if (numericMonthly.length === 0) {
+    return { ok: false, reason: "no_numeric_monthly_observations" };
   }
+
+  // BLS can return a successful response containing a placeholder such as
+  // "..." for a not-yet-available monthly observation. Do not silently
+  // convert that into a value. Keep it visible and use the newest numeric
+  // observation as the transport-level usable observation.
+  const latestRaw = monthly[0];
+  const latestNumeric = numericMonthly[0];
 
   return {
     ok: true,
     series_id: expected,
     observation_count: monthly.length,
-    latest_observation: monthly[0]
+    numeric_observation_count: numericMonthly.length,
+    latest_observation_raw: latestRaw,
+    latest_numeric_observation: latestNumeric,
+    latest_observation_usable: numericValue(latestRaw.value) !== null
   };
 }
 
@@ -109,6 +131,7 @@ async function fetchBls(sourceId, env) {
   const now = new Date();
   const endYear = now.getUTCFullYear();
   const startYear = endYear - 2;
+
   const payload = {
     seriesid: [BLS_SERIES[sourceId]],
     startyear: String(startYear),
@@ -127,7 +150,7 @@ async function fetchBls(sourceId, env) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.3"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.4"
         },
         body: JSON.stringify(payload)
       });
@@ -138,7 +161,7 @@ async function fetchBls(sourceId, env) {
 
       if (r.status === 429 || r.status >= 500) {
         if (attempt < 2) {
-          await sleep(attempt === 0 ? 750 : 2000);
+          await sleep(attempt === 0 ? 1000 : 3000);
           continue;
         }
       }
@@ -193,7 +216,10 @@ async function fetchBls(sourceId, env) {
         request_start_year: String(startYear),
         request_end_year: String(endYear),
         observation_count: validation.observation_count,
-        latest_observation: validation.latest_observation,
+        numeric_observation_count: validation.numeric_observation_count,
+        latest_observation_raw: validation.latest_observation_raw,
+        latest_numeric_observation: validation.latest_numeric_observation,
+        latest_observation_usable: validation.latest_observation_usable,
         body_bytes: new TextEncoder().encode(body).length,
         body_sha256: await sha256(body),
         content_type: r.headers.get("content-type") || "",
@@ -202,7 +228,7 @@ async function fetchBls(sourceId, env) {
     } catch (e) {
       lastBody = String(e?.message || e);
       if (attempt < 2) {
-        await sleep(attempt === 0 ? 750 : 2000);
+        await sleep(attempt === 0 ? 1000 : 3000);
         continue;
       }
     }
@@ -231,7 +257,7 @@ export default {
       return jsonResponse({
         ok: true,
         service: "macro-fuel-relay",
-        version: "0.2.3"
+        version: "0.2.4"
       });
     }
 
@@ -263,7 +289,7 @@ export default {
     try {
       const r = await fetch(url, {
         headers: {
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.3"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.4"
         }
       });
       const body = await r.text();
