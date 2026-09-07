@@ -28,6 +28,7 @@ async function sha256(s) {
     "SHA-256",
     new TextEncoder().encode(s)
   );
+
   return [...new Uint8Array(b)]
     .map(x => x.toString(16).padStart(2, "0"))
     .join("");
@@ -40,7 +41,9 @@ function sleep(ms) {
 function jsonResponse(obj, status = 200) {
   return Response.json(obj, {
     status,
-    headers: { "Cache-Control": "no-store" }
+    headers: {
+      "Cache-Control": "no-store"
+    }
   });
 }
 
@@ -49,17 +52,30 @@ function isMonthly(period) {
 }
 
 function numericValue(value) {
-  if (value === undefined || value === null) return null;
+  if (value === undefined || value === null) {
+    return null;
+  }
+
   const s = String(value).trim().replace(/,/g, "");
-  if (s === "" || s === "..." || s === "-") return null;
+
+  if (s === "" || s === "..." || s === "-") {
+    return null;
+  }
+
   const n = Number(s);
+
   return Number.isFinite(n) ? n : null;
 }
 
 function isValidJisdorDate(value) {
-  if (!/^\d{2}-\d{2}-\d{4}$/.test(String(value))) return false;
+  if (!/^\d{2}-\d{2}-\d{4}$/.test(String(value))) {
+    return false;
+  }
 
-  const [dd, mm, yyyy] = String(value).split("-").map(Number);
+  const [dd, mm, yyyy] = String(value)
+    .split("-")
+    .map(Number);
+
   const d = new Date(Date.UTC(yyyy, mm - 1, dd));
 
   return (
@@ -70,7 +86,10 @@ function isValidJisdorDate(value) {
 }
 
 function jisdorDateToUtc(value) {
-  const [dd, mm, yyyy] = String(value).split("-").map(Number);
+  const [dd, mm, yyyy] = String(value)
+    .split("-")
+    .map(Number);
+
   return new Date(Date.UTC(yyyy, mm - 1, dd));
 }
 
@@ -89,18 +108,293 @@ function buildJisdorSoapBody(startDate, endDate) {
 </soap:Envelope>`.trim();
 }
 
-async function probeJisdorDateFormats(u, env) {
+function extractTagNames(xml) {
+  const names = new Set();
+
+  const re =
+    /<(?![!?/])([A-Za-z_][\w:.-]*)(?:\s|>)/g;
+
+  let m;
+
+  while ((m = re.exec(xml)) !== null) {
+    const n = m[1];
+
+    if (
+      !/^(DataSet|schema|Table|xs:schema|xsd:schema)$/i.test(n)
+    ) {
+      names.add(n);
+    }
+  }
+
+  return [...names].slice(0, 200);
+}
+
+function inspectJisdorXml(xml) {
+  const tableMatches = [
+    ...xml.matchAll(
+      /<Table(?:\s[^>]*)?>([\s\S]*?)<\/Table>/gi
+    )
+  ];
+
+  const tables = tableMatches.map((m, i) => {
+    const block = m[1] || "";
+
+    const fieldMatches = [
+      ...block.matchAll(
+        /<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([^<]*)<\/\1>/g
+      )
+    ];
+
+    const fields = [
+      ...new Set(
+        fieldMatches.map(x => x[1])
+      )
+    ];
+
+    return {
+      index: i,
+      bytes: new TextEncoder()
+        .encode(block)
+        .length,
+
+      fields: fields.slice(0, 100),
+
+      sample_values: fieldMatches
+        .slice(0, 30)
+        .map(x => ({
+          field: x[1],
+          value: x[2]
+            .trim()
+            .slice(0, 200)
+        }))
+    };
+  });
+
+  const schemaElements = [
+    ...xml.matchAll(
+      /<(?:xs|xsd):element\s+[^>]*name=["']([^"']+)["'][^>]*>/gi
+    )
+  ].map(m => m[1]);
+
+  const allElementNames = extractTagNames(xml);
+
+  return {
+    table_count: tables.length,
+
+    tables,
+
+    schema_element_names: [
+      ...new Set(schemaElements)
+    ].slice(0, 200),
+
+    all_element_names: allElementNames,
+
+    jisdor_keyword_hits: [
+      ...new Set(
+        (
+          xml.match(
+            /[^<]*jisdor[^<]*/gi
+          ) || []
+        ).map(x =>
+          x.trim().slice(0, 200)
+        )
+      )
+    ].slice(0, 50)
+  };
+}
+
+async function fetchJisdorOperation(
+  operation,
+  params,
+  env,
+  diagnosticOnly = true
+) {
+  const sourceUrl =
+    `https://www.bi.go.id/biwebservice/wskursbi.asmx/${operation}`;
+
+  const body =
+    new URLSearchParams(params).toString();
+
+  const acquiredAt =
+    new Date().toISOString();
+
+  const r = await fetch(sourceUrl, {
+    method: "POST",
+
+    headers: {
+      "Content-Type":
+        "application/x-www-form-urlencoded; charset=UTF-8",
+
+      "Accept":
+        "text/xml, application/xml",
+
+      "User-Agent":
+        "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.14-JISDOR-DIAG"
+    },
+
+    body
+  });
+
+  const responseBody =
+    await r.text();
+
+  return {
+    operation,
+
+    source_url: sourceUrl,
+
+    acquired_at: acquiredAt,
+
+    status_code: r.status,
+
+    content_type:
+      r.headers.get("content-type") || "",
+
+    request_params: params,
+
+    request_body_sha256:
+      await sha256(body),
+
+    body_bytes:
+      new TextEncoder()
+        .encode(responseBody)
+        .length,
+
+    body_sha256:
+      await sha256(responseBody),
+
+    has_dataset:
+      /<DataSet(?:\s|>)/i
+        .test(responseBody),
+
+    has_html:
+      /<\s*!doctype\s+html|<\s*html(?:\s|>)/i
+        .test(responseBody),
+
+    inspection:
+      inspectJisdorXml(responseBody),
+
+    body:
+      responseBody.slice(0, 20000)
+  };
+}
+
+async function probeJisdorStructure(u, env) {
   const startDate =
-    u.searchParams.get("startDate") || "01-01-2026";
+    u.searchParams.get("startDate") ||
+    "01-01-2026";
 
   const endDate =
-    u.searchParams.get("endDate") || "31-01-2026";
+    u.searchParams.get("endDate") ||
+    "31-01-2026";
 
-  const [dd, mm, yyyy] =
-    startDate.split("-");
+  const [
+    dd,
+    mm,
+    yyyy
+  ] = startDate.split("-");
 
-  const [dd2, mm2, yyyy2] =
-    endDate.split("-");
+  const [
+    dd2,
+    mm2,
+    yyyy2
+  ] = endDate.split("-");
+
+  const normalizedStart =
+    `${dd}-${mm}-${yyyy}`;
+
+  const normalizedEnd =
+    `${dd2}-${mm2}-${yyyy2}`;
+
+  const results = [];
+
+  try {
+    results.push(
+      await fetchJisdorOperation(
+        "getSubKursJisdor3",
+        {
+          mts: "USD",
+          startDate: normalizedStart,
+          endDate: normalizedEnd
+        },
+        env
+      )
+    );
+  } catch (e) {
+    results.push({
+      operation: "getSubKursJisdor3",
+      error:
+        String(
+          e?.message || e
+        ).slice(0, 1000)
+    });
+  }
+
+  try {
+    /*
+     * JISDOR4 is the official
+     * single-date all-currency operation.
+     */
+    results.push(
+      await fetchJisdorOperation(
+        "getSubKursJisdor4",
+        {
+          startDate: normalizedStart
+        },
+        env
+      )
+    );
+  } catch (e) {
+    results.push({
+      operation: "getSubKursJisdor4",
+      error:
+        String(
+          e?.message || e
+        ).slice(0, 1000)
+    });
+  }
+
+  return jsonResponse({
+    ok: true,
+
+    diagnostic_only: true,
+
+    source_id: "jisdor",
+
+    dataset_id: "JISDOR",
+
+    note:
+      "Diagnostic only. No corpus persistence. Jisdor3 structure + Jisdor4 single-date cross-check.",
+
+    request: {
+      startDate: normalizedStart,
+      endDate: normalizedEnd
+    },
+
+    results
+  });
+}
+
+async function probeJisdorDateFormats(u, env) {
+  const startDate =
+    u.searchParams.get("startDate") ||
+    "01-01-2026";
+
+  const endDate =
+    u.searchParams.get("endDate") ||
+    "31-01-2026";
+
+  const [
+    dd,
+    mm,
+    yyyy
+  ] = startDate.split("-");
+
+  const [
+    dd2,
+    mm2,
+    yyyy2
+  ] = endDate.split("-");
 
   const candidates = [
     {
@@ -108,20 +402,29 @@ async function probeJisdorDateFormats(u, env) {
       startDate,
       endDate
     },
+
     {
       name: "YYYY-MM-DD",
-      startDate: `${yyyy}-${mm}-${dd}`,
-      endDate: `${yyyy2}-${mm2}-${dd2}`
+      startDate:
+        `${yyyy}-${mm}-${dd}`,
+      endDate:
+        `${yyyy2}-${mm2}-${dd2}`
     },
+
     {
       name: "DD/MM/YYYY",
-      startDate: `${dd}/${mm}/${yyyy}`,
-      endDate: `${dd2}/${mm2}/${yyyy2}`
+      startDate:
+        `${dd}/${mm}/${yyyy}`,
+      endDate:
+        `${dd2}/${mm2}/${yyyy2}`
     },
+
     {
       name: "MM/DD/YYYY",
-      startDate: `${mm}/${dd}/${yyyy}`,
-      endDate: `${mm2}/${dd2}/${yyyy2}`
+      startDate:
+        `${mm}/${dd}/${yyyy}`,
+      endDate:
+        `${mm2}/${dd2}/${yyyy2}`
     }
   ];
 
@@ -158,8 +461,7 @@ async function probeJisdorDateFormats(u, env) {
         await r.text();
 
       results.push({
-        format:
-          candidate.name,
+        format: candidate.name,
 
         startDate:
           candidate.startDate,
@@ -203,12 +505,9 @@ async function probeJisdorDateFormats(u, env) {
             ) || []
           ).length
       });
-
     } catch (e) {
-
       results.push({
-        format:
-          candidate.name,
+        format: candidate.name,
 
         startDate:
           candidate.startDate,
@@ -225,21 +524,15 @@ async function probeJisdorDateFormats(u, env) {
   }
 
   return jsonResponse({
+    ok: true,
 
-    ok:
-      true,
+    diagnostic_only: true,
 
-    diagnostic_only:
-      true,
+    source_id: "jisdor",
 
-    source_id:
-      "jisdor",
+    dataset_id: "JISDOR",
 
-    dataset_id:
-      "JISDOR",
-
-    source_url:
-      sourceUrl,
+    source_url: sourceUrl,
 
     note:
       "Diagnostic only. Results are not corpus evidence and are not persisted.",
@@ -256,50 +549,44 @@ async function fetchJisdorBatch(u, env) {
     u.searchParams.get("endDate");
 
   if (!startDate || !endDate) {
+    return jsonResponse(
+      {
+        ok: false,
 
-    return jsonResponse({
+        source_id: "jisdor",
 
-      ok:
-        false,
+        dataset_id: "JISDOR",
 
-      source_id:
-        "jisdor",
+        error:
+          "missing_startDate_or_endDate",
 
-      dataset_id:
-        "JISDOR",
-
-      error:
-        "missing_startDate_or_endDate",
-
-      expected:
-        "/jisdor?startDate=DD-MM-YYYY&endDate=DD-MM-YYYY"
-
-    }, 400);
+        expected:
+          "/jisdor?startDate=DD-MM-YYYY&endDate=DD-MM-YYYY"
+      },
+      400
+    );
   }
 
   if (
     !isValidJisdorDate(startDate) ||
     !isValidJisdorDate(endDate)
   ) {
+    return jsonResponse(
+      {
+        ok: false,
 
-    return jsonResponse({
+        source_id: "jisdor",
 
-      ok:
-        false,
+        dataset_id: "JISDOR",
 
-      source_id:
-        "jisdor",
+        error:
+          "invalid_date_format_or_date",
 
-      dataset_id:
-        "JISDOR",
-
-      error:
-        "invalid_date_format_or_date",
-
-      expected:
-        "DD-MM-YYYY"
-
-    }, 400);
+        expected:
+          "DD-MM-YYYY"
+      },
+      400
+    );
   }
 
   const start =
@@ -309,22 +596,19 @@ async function fetchJisdorBatch(u, env) {
     jisdorDateToUtc(endDate);
 
   if (end < start) {
+    return jsonResponse(
+      {
+        ok: false,
 
-    return jsonResponse({
+        source_id: "jisdor",
 
-      ok:
-        false,
+        dataset_id: "JISDOR",
 
-      source_id:
-        "jisdor",
-
-      dataset_id:
-        "JISDOR",
-
-      error:
-        "end_date_before_start_date"
-
-    }, 400);
+        error:
+          "end_date_before_start_date"
+      },
+      400
+    );
   }
 
   const rangeDays =
@@ -333,25 +617,21 @@ async function fetchJisdorBatch(u, env) {
     );
 
   if (rangeDays > 366) {
+    return jsonResponse(
+      {
+        ok: false,
 
-    return jsonResponse({
+        source_id: "jisdor",
 
-      ok:
-        false,
+        dataset_id: "JISDOR",
 
-      source_id:
-        "jisdor",
+        error:
+          "date_range_too_large",
 
-      dataset_id:
-        "JISDOR",
-
-      error:
-        "date_range_too_large",
-
-      max_days:
-        366
-
-    }, 400);
+        max_days: 366
+      },
+      400
+    );
   }
 
   const sourceUrl =
@@ -366,29 +646,22 @@ async function fetchJisdorBatch(u, env) {
     new Date().toISOString();
 
   try {
+    const r = await fetch(sourceUrl, {
+      method: "POST",
 
-    const r =
-      await fetch(
-        sourceUrl,
-        {
-          method:
-            "POST",
+      headers: {
+        "Content-Type":
+          "application/x-www-form-urlencoded; charset=UTF-8",
 
-          headers: {
+        "Accept":
+          "text/xml, application/xml",
 
-            "Content-Type":
-              "application/x-www-form-urlencoded; charset=UTF-8",
+        "User-Agent":
+          "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
+      },
 
-            "Accept":
-              "text/xml, application/xml",
-
-            "User-Agent":
-              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-          },
-
-          body
-        }
-      );
+      body
+    });
 
     const responseBody =
       await r.text();
@@ -417,18 +690,9 @@ async function fetchJisdorBatch(u, env) {
         .test(trimmedBody);
 
     const looksLikeJisdor =
-      /<DataSet(?:\s|>)/i
-        .test(responseBody) ||
-
-      /<getSubKursJisdor3Response(?:\s|>)/i
-        .test(responseBody) ||
-
-      /<(?:Table|tgl_subkursjisdor|nilai_subkursjisdor)(?:\s|>)/i
-        .test(responseBody);
-
-    /*
-     * HTTP 200 alone is NOT sufficient evidence.
-     */
+      /<DataSet(?:\s|>)/i.test(responseBody) ||
+      /<getSubKursJisdor3Response(?:\s|>)/i.test(responseBody) ||
+      /<(?:Table|tgl_subkursjisdor|nilai_subkursjisdor)(?:\s|>)/i.test(responseBody);
 
     if (
       r.ok &&
@@ -438,26 +702,162 @@ async function fetchJisdorBatch(u, env) {
         !looksLikeJisdor
       )
     ) {
+      return jsonResponse(
+        {
+          ok: false,
 
-      return jsonResponse({
+          source_id: "jisdor",
 
-        ok:
-          false,
+          dataset_id: "JISDOR",
 
-        source_id:
-          "jisdor",
+          source_url: sourceUrl,
 
-        dataset_id:
-          "JISDOR",
+          status_code: r.status,
 
-        source_url:
-          sourceUrl,
+          acquired_at: acquiredAt,
 
-        status_code:
-          r.status,
+          request_start_date:
+            startDate,
 
-        acquired_at:
-          acquiredAt,
+          request_end_date:
+            endDate,
+
+          request_fingerprint_material: {
+            url: sourceUrl,
+
+            method: "POST",
+
+            params: {
+              mts: "USD",
+
+              startDate,
+
+              endDate
+            }
+          },
+
+          request_body_sha256:
+            await sha256(body),
+
+          body_bytes:
+            bodyBytes,
+
+          body_sha256:
+            bodySha256,
+
+          content_type:
+            contentType,
+
+          error:
+            "invalid_jisdor_payload",
+
+          reason:
+            looksLikeHtml
+              ? "html_payload"
+              : !looksLikeXml
+                ? "non_xml_payload"
+                : "jisdor_structure_not_detected",
+
+          body:
+            responseBody.slice(0, 4000)
+        },
+        502
+      );
+    }
+
+    if (r.status === 429) {
+      return jsonResponse(
+        {
+          ok: false,
+
+          source_id: "jisdor",
+
+          dataset_id: "JISDOR",
+
+          source_url: sourceUrl,
+
+          status_code: r.status,
+
+          acquired_at: acquiredAt,
+
+          request_start_date:
+            startDate,
+
+          request_end_date:
+            endDate,
+
+          body_bytes:
+            bodyBytes,
+
+          body_sha256:
+            bodySha256,
+
+          content_type:
+            r.headers.get("content-type") || "",
+
+          error:
+            "upstream_rate_limited",
+
+          body:
+            responseBody.slice(0, 2000)
+        },
+        429
+      );
+    }
+
+    if (r.status >= 500) {
+      return jsonResponse(
+        {
+          ok: false,
+
+          source_id: "jisdor",
+
+          dataset_id: "JISDOR",
+
+          source_url: sourceUrl,
+
+          status_code: r.status,
+
+          acquired_at: acquiredAt,
+
+          request_start_date:
+            startDate,
+
+          request_end_date:
+            endDate,
+
+          body_bytes:
+            bodyBytes,
+
+          body_sha256:
+            bodySha256,
+
+          content_type:
+            r.headers.get("content-type") || "",
+
+          error:
+            "upstream_server_error",
+
+          body:
+            responseBody.slice(0, 2000)
+        },
+        502
+      );
+    }
+
+    return jsonResponse(
+      {
+        ok: r.ok,
+
+        source_id: "jisdor",
+
+        dataset_id: "JISDOR",
+
+        source_url: sourceUrl,
+
+        status_code: r.status,
+
+        acquired_at: acquiredAt,
 
         request_start_date:
           startDate,
@@ -466,17 +866,12 @@ async function fetchJisdorBatch(u, env) {
           endDate,
 
         request_fingerprint_material: {
+          url: sourceUrl,
 
-          url:
-            sourceUrl,
-
-          method:
-            "POST",
+          method: "POST",
 
           params: {
-
-            mts:
-              "USD",
+            mts: "USD",
 
             startDate,
 
@@ -496,223 +891,48 @@ async function fetchJisdorBatch(u, env) {
         content_type:
           contentType,
 
-        error:
-          "invalid_jisdor_payload",
-
-        reason:
-          looksLikeHtml
-            ? "html_payload"
-            : !looksLikeXml
-              ? "non_xml_payload"
-              : "jisdor_structure_not_detected",
-
         body:
-          responseBody.slice(
-            0,
-            4000
-          )
-
-      }, 502);
-    }
-
-    if (r.status === 429) {
-
-      return jsonResponse({
-
-        ok:
-          false,
-
-        source_id:
-          "jisdor",
-
-        dataset_id:
-          "JISDOR",
-
-        source_url:
-          sourceUrl,
-
-        status_code:
-          r.status,
-
-        acquired_at:
-          acquiredAt,
-
-        request_start_date:
-          startDate,
-
-        request_end_date:
-          endDate,
-
-        body_bytes:
-          bodyBytes,
-
-        body_sha256:
-          bodySha256,
-
-        content_type:
-          contentType,
-
-        error:
-          "upstream_rate_limited",
-
-        body:
-          responseBody.slice(
-            0,
-            2000
-          )
-
-      }, 429);
-    }
-
-    if (r.status >= 500) {
-
-      return jsonResponse({
-
-        ok:
-          false,
-
-        source_id:
-          "jisdor",
-
-        dataset_id:
-          "JISDOR",
-
-        source_url:
-          sourceUrl,
-
-        status_code:
-          r.status,
-
-        acquired_at:
-          acquiredAt,
-
-        request_start_date:
-          startDate,
-
-        request_end_date:
-          endDate,
-
-        body_bytes:
-          bodyBytes,
-
-        body_sha256:
-          bodySha256,
-
-        content_type:
-          contentType,
-
-        error:
-          "upstream_server_error",
-
-        body:
-          responseBody.slice(
-            0,
-            2000
-          )
-
-      }, 502);
-    }
-
-    return jsonResponse({
-
-      ok:
-        r.ok,
-
-      source_id:
-        "jisdor",
-
-      dataset_id:
-        "JISDOR",
-
-      source_url:
-        sourceUrl,
-
-      status_code:
-        r.status,
-
-      acquired_at:
-        acquiredAt,
-
-      request_start_date:
-        startDate,
-
-      request_end_date:
-        endDate,
-
-      request_fingerprint_material: {
-
-        url:
-          sourceUrl,
-
-        method:
-          "POST",
-
-        params: {
-
-          mts:
-            "USD",
-
-          startDate,
-
-          endDate
-        }
+          responseBody
       },
-
-      request_body_sha256:
-        await sha256(body),
-
-      body_bytes:
-        bodyBytes,
-
-      body_sha256:
-        bodySha256,
-
-      content_type:
-        contentType,
-
-      body:
-        responseBody
-
-    }, r.ok ? 200 : 502);
+      r.ok ? 200 : 502
+    );
 
   } catch (e) {
+    return jsonResponse(
+      {
+        ok: false,
 
-    return jsonResponse({
+        source_id: "jisdor",
 
-      ok:
-        false,
+        dataset_id: "JISDOR",
 
-      source_id:
-        "jisdor",
+        source_url: sourceUrl,
 
-      dataset_id:
-        "JISDOR",
+        acquired_at: acquiredAt,
 
-      source_url:
-        sourceUrl,
+        request_start_date:
+          startDate,
 
-      acquired_at:
-        acquiredAt,
+        request_end_date:
+          endDate,
 
-      request_start_date:
-        startDate,
+        error:
+          "upstream_fetch_failed",
 
-      request_end_date:
-        endDate,
-
-      error:
-        "upstream_fetch_failed",
-
-      detail:
-        String(
-          e?.message || e
-        ).slice(0, 1000)
-
-    }, 502);
+        detail:
+          String(
+            e?.message || e
+          ).slice(0, 1000)
+      },
+      502
+    );
   }
 }
 
-function validateBlsPayload(sourceId, payload) {
+function validateBlsPayload(
+  sourceId,
+  payload
+) {
   const expected =
     BLS_SERIES[sourceId];
 
@@ -721,11 +941,8 @@ function validateBlsPayload(sourceId, payload) {
     payload.status !==
       "REQUEST_SUCCEEDED"
   ) {
-
     return {
-      ok:
-        false,
-
+      ok: false,
       reason:
         "bls_api_status_not_succeeded"
     };
@@ -738,25 +955,18 @@ function validateBlsPayload(sourceId, payload) {
     !Array.isArray(series) ||
     series.length !== 1
   ) {
-
     return {
-      ok:
-        false,
-
+      ok: false,
       reason:
         "unexpected_series_shape"
     };
   }
 
   if (
-    series[0]?.seriesID !==
-      expected
+    series[0]?.seriesID !== expected
   ) {
-
     return {
-      ok:
-        false,
-
+      ok: false,
       reason:
         "unexpected_series_id"
     };
@@ -769,48 +979,37 @@ function validateBlsPayload(sourceId, payload) {
     !Array.isArray(data) ||
     data.length === 0
   ) {
-
     return {
-      ok:
-        false,
-
+      ok: false,
       reason:
         "no_observations"
     };
   }
 
   const currentYear =
-    new Date()
-      .getUTCFullYear();
+    new Date().getUTCFullYear();
 
   const monthly =
-    data.filter(
-      x => isMonthly(x.period)
+    data.filter(x =>
+      isMonthly(x.period)
     );
 
   if (monthly.length === 0) {
-
     return {
-      ok:
-        false,
-
+      ok: false,
       reason:
         "no_monthly_observations"
     };
   }
 
   for (const row of data) {
-
     if (
       !/^\d{4}$/.test(
         String(row.year)
       )
     ) {
-
       return {
-        ok:
-          false,
-
+        ok: false,
         reason:
           "invalid_year"
       };
@@ -818,13 +1017,10 @@ function validateBlsPayload(sourceId, payload) {
 
     if (
       Number(row.year) >
-        currentYear
+      currentYear
     ) {
-
       return {
-        ok:
-          false,
-
+        ok: false,
         reason:
           "future_year_observation"
       };
@@ -835,30 +1031,32 @@ function validateBlsPayload(sourceId, payload) {
     monthly
       .map(row => ({
         ...row,
-
         numeric_value:
-          numericValue(
-            row.value
-          )
+          numericValue(row.value)
       }))
-      .filter(
-        row =>
-          row.numeric_value !== null
+      .filter(row =>
+        row.numeric_value !== null
       );
 
   if (
     numericMonthly.length === 0
   ) {
-
     return {
-      ok:
-        false,
-
+      ok: false,
       reason:
         "no_numeric_monthly_observations"
     };
   }
 
+  /*
+   * BLS can return a successful response
+   * containing a placeholder such as "..."
+   * for a not-yet-available monthly
+   * observation.
+   *
+   * Do not silently convert that into
+   * a value.
+   */
   const latestRaw =
     monthly[0];
 
@@ -866,9 +1064,7 @@ function validateBlsPayload(sourceId, payload) {
     numericMonthly[0];
 
   return {
-
-    ok:
-      true,
+    ok: true,
 
     series_id:
       expected,
@@ -896,21 +1092,19 @@ async function fetchBls(
   sourceId,
   env
 ) {
-
   if (!env.BLS_API_KEY) {
+    return jsonResponse(
+      {
+        ok: false,
 
-    return jsonResponse({
+        source_id:
+          sourceId,
 
-      ok:
-        false,
-
-      source_id:
-        sourceId,
-
-      error:
-        "missing_bls_api_key"
-
-    }, 500);
+        error:
+          "missing_bls_api_key"
+      },
+      500
+    );
   }
 
   const now =
@@ -923,7 +1117,6 @@ async function fetchBls(
     endYear - 2;
 
   const payload = {
-
     seriesid: [
       BLS_SERIES[sourceId]
     ],
@@ -938,46 +1131,35 @@ async function fetchBls(
       env.BLS_API_KEY
   };
 
-  let lastStatus =
-    0;
-
-  let lastBody =
-    "";
+  let lastStatus = 0;
+  let lastBody = "";
 
   for (
     let attempt = 0;
     attempt < 3;
     attempt++
   ) {
-
     const acquiredAt =
       new Date().toISOString();
 
     try {
+      const r = await fetch(
+        SOURCES[sourceId],
+        {
+          method: "POST",
 
-      const r =
-        await fetch(
-          SOURCES[sourceId],
-          {
+          headers: {
+            "Content-Type":
+              "application/json",
 
-            method:
-              "POST",
+            "User-Agent":
+              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
+          },
 
-            headers: {
-
-              "Content-Type":
-                "application/json",
-
-              "User-Agent":
-                "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-            },
-
-            body:
-              JSON.stringify(
-                payload
-              )
-          }
-        );
+          body:
+            JSON.stringify(payload)
+        }
+      );
 
       const body =
         await r.text();
@@ -992,11 +1174,7 @@ async function fetchBls(
         r.status === 429 ||
         r.status >= 500
       ) {
-
-        if (
-          attempt < 2
-        ) {
-
+        if (attempt < 2) {
           await sleep(
             attempt === 0
               ? 1000
@@ -1007,60 +1185,51 @@ async function fetchBls(
         }
       }
 
-      let parsed =
-        null;
+      let parsed = null;
 
       try {
-
         parsed =
           JSON.parse(body);
-
       } catch {
-
-        parsed =
-          null;
+        parsed = null;
       }
 
       if (!r.ok) {
+        return jsonResponse(
+          {
+            ok: false,
 
-        return jsonResponse({
+            source_id:
+              sourceId,
 
-          ok:
-            false,
+            dataset_id:
+              sourceId,
 
-          source_id:
-            sourceId,
+            source_url:
+              SOURCES[sourceId],
 
-          dataset_id:
-            sourceId,
+            status_code:
+              r.status,
 
-          source_url:
-            SOURCES[sourceId],
+            acquired_at:
+              acquiredAt,
 
-          status_code:
-            r.status,
+            body_sha256:
+              await sha256(body),
 
-          acquired_at:
-            acquiredAt,
+            content_type:
+              r.headers.get(
+                "content-type"
+              ) || "",
 
-          body_sha256:
-            await sha256(body),
+            error:
+              "bls_upstream_http_error",
 
-          content_type:
-            r.headers.get(
-              "content-type"
-            ) || "",
-
-          error:
-            "bls_upstream_http_error",
-
-          upstream_body:
-            body.slice(
-              0,
-              2000
-            )
-
-        }, 502);
+            upstream_body:
+              body.slice(0, 2000)
+          },
+          502
+        );
       }
 
       const validation =
@@ -1069,56 +1238,51 @@ async function fetchBls(
           parsed
         );
 
-      if (
-        !validation.ok
-      ) {
+      if (!validation.ok) {
+        return jsonResponse(
+          {
+            ok: false,
 
-        return jsonResponse({
+            source_id:
+              sourceId,
 
-          ok:
-            false,
+            dataset_id:
+              sourceId,
 
-          source_id:
-            sourceId,
+            source_url:
+              SOURCES[sourceId],
 
-          dataset_id:
-            sourceId,
+            status_code:
+              r.status,
 
-          source_url:
-            SOURCES[sourceId],
+            acquired_at:
+              acquiredAt,
 
-          status_code:
-            r.status,
+            body_sha256:
+              await sha256(body),
 
-          acquired_at:
-            acquiredAt,
+            content_type:
+              r.headers.get(
+                "content-type"
+              ) || "",
 
-          body_sha256:
-            await sha256(body),
+            error:
+              validation.reason,
 
-          content_type:
-            r.headers.get(
-              "content-type"
-            ) || "",
+            upstream_status:
+              parsed?.status ||
+              null,
 
-          error:
-            validation.reason,
-
-          upstream_status:
-            parsed?.status ||
-            null,
-
-          upstream_message:
-            parsed?.message ||
-            []
-
-        }, 502);
+            upstream_message:
+              parsed?.message ||
+              []
+          },
+          502
+        );
       }
 
       return jsonResponse({
-
-        ok:
-          true,
+        ok: true,
 
         source_id:
           sourceId,
@@ -1173,72 +1337,58 @@ async function fetchBls(
           ) || "",
 
         body
-
       });
 
     } catch (e) {
-
       lastBody =
         String(
           e?.message || e
         );
 
-      if (
-        attempt < 2
-      ) {
-
+      if (attempt < 2) {
         await sleep(
           attempt === 0
             ? 1000
             : 3000
         );
+
+        continue;
       }
     }
   }
 
-  return jsonResponse({
+  return jsonResponse(
+    {
+      ok: false,
 
-    ok:
-      false,
+      source_id:
+        sourceId,
 
-    source_id:
-      sourceId,
+      dataset_id:
+        sourceId,
 
-    dataset_id:
-      sourceId,
+      source_url:
+        SOURCES[sourceId],
 
-    source_url:
-      SOURCES[sourceId],
+      status_code:
+        lastStatus,
 
-    status_code:
-      lastStatus,
+      error:
+        "upstream_fetch_failed_after_retries",
 
-    error:
-      "upstream_fetch_failed_after_retries",
-
-    upstream_body:
-      lastBody.slice(
-        0,
-        2000
-      )
-
-  }, 502);
+      upstream_body:
+        lastBody.slice(0, 2000)
+    },
+    502
+  );
 }
 
 export default {
-
-  async fetch(
-    req,
-    env
-  ) {
-
+  async fetch(req, env) {
     const u =
       new URL(req.url);
 
-    if (
-      req.method !== "GET"
-    ) {
-
+    if (req.method !== "GET") {
       return new Response(
         "Method Not Allowed",
         {
@@ -1247,30 +1397,28 @@ export default {
       );
     }
 
-    if (
-      u.pathname ===
-        "/health"
-    ) {
-
+    if (u.pathname === "/health") {
       return jsonResponse({
-
-        ok:
-          true,
+        ok: true,
 
         service:
           "macro-fuel-relay",
 
         version:
           "0.2.13"
-
       });
     }
 
+    /*
+     * Dedicated diagnostic route:
+     * test multiple date encodings.
+     *
+     * No corpus persistence.
+     */
     if (
       u.pathname ===
-        "/jisdor_probe"
+      "/jisdor_probe"
     ) {
-
       if (
         env.RELAY_TOKEN &&
         req.headers.get(
@@ -1278,12 +1426,9 @@ export default {
         ) !==
           `Bearer ${env.RELAY_TOKEN}`
       ) {
-
         return jsonResponse(
           {
-            ok:
-              false,
-
+            ok: false,
             error:
               "unauthorized"
           },
@@ -1297,11 +1442,16 @@ export default {
       );
     }
 
+    /*
+     * Production-facing dedicated
+     * JISDOR batch relay.
+     *
+     * Kept separate from legacy
+     * /fuel/jisdor route.
+     */
     if (
-      u.pathname ===
-        "/jisdor"
+      u.pathname === "/jisdor"
     ) {
-
       if (
         env.RELAY_TOKEN &&
         req.headers.get(
@@ -1309,12 +1459,9 @@ export default {
         ) !==
           `Bearer ${env.RELAY_TOKEN}`
       ) {
-
         return jsonResponse(
           {
-            ok:
-              false,
-
+            ok: false,
             error:
               "unauthorized"
           },
@@ -1328,16 +1475,51 @@ export default {
       );
     }
 
+    /*
+     * Structural diagnostic:
+     *
+     * Jisdor3:
+     *   currency + date range
+     *
+     * Jisdor4:
+     *   all currencies for one date
+     *
+     * No corpus persistence.
+     */
+    if (
+      u.pathname ===
+      "/jisdor_probe_structure"
+    ) {
+      if (
+        env.RELAY_TOKEN &&
+        req.headers.get(
+          "Authorization"
+        ) !==
+          `Bearer ${env.RELAY_TOKEN}`
+      ) {
+        return jsonResponse(
+          {
+            ok: false,
+            error:
+              "unauthorized"
+          },
+          401
+        );
+      }
+
+      return probeJisdorStructure(
+        u,
+        env
+      );
+    }
+
     const sourceId =
       ROUTES[u.pathname];
 
     if (!sourceId) {
-
       return jsonResponse(
         {
-          ok:
-            false,
-
+          ok: false,
           error:
             "route_not_allowed"
         },
@@ -1352,12 +1534,9 @@ export default {
       ) !==
         `Bearer ${env.RELAY_TOKEN}`
     ) {
-
       return jsonResponse(
         {
-          ok:
-            false,
-
+          ok: false,
           error:
             "unauthorized"
         },
@@ -1366,12 +1545,9 @@ export default {
     }
 
     if (
-      sourceId ===
-        "bls_cpi" ||
-      sourceId ===
-        "bls_employment"
+      sourceId === "bls_cpi" ||
+      sourceId === "bls_employment"
     ) {
-
       return fetchBls(
         sourceId,
         env
@@ -1385,82 +1561,80 @@ export default {
       new Date().toISOString();
 
     try {
-
-      const r =
-        await fetch(
-          url,
-          {
-            headers: {
-
-              "User-Agent":
-                "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-            }
+      const r = await fetch(
+        url,
+        {
+          headers: {
+            "User-Agent":
+              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
           }
-        );
+        }
+      );
 
       const body =
         await r.text();
 
-      return jsonResponse({
+      return jsonResponse(
+        {
+          ok: r.ok,
 
-        ok:
-          r.ok,
+          source_id:
+            sourceId,
 
-        source_id:
-          sourceId,
+          dataset_id:
+            sourceId,
 
-        dataset_id:
-          sourceId,
+          source_url:
+            url,
 
-        source_url:
-          url,
+          status_code:
+            r.status,
 
-        status_code:
-          r.status,
+          acquired_at:
+            acquiredAt,
 
-        acquired_at:
-          acquiredAt,
+          body_bytes:
+            new TextEncoder()
+              .encode(body)
+              .length,
 
-        body_bytes:
-          new TextEncoder()
-            .encode(body)
-            .length,
+          body_sha256:
+            await sha256(body),
 
-        body_sha256:
-          await sha256(body),
+          content_type:
+            r.headers.get(
+              "content-type"
+            ) || "",
 
-        content_type:
-          r.headers.get(
-            "content-type"
-          ) || "",
-
-        body
-
-      }, r.ok ? 200 : 502);
+          body
+        },
+        r.ok
+          ? 200
+          : 502
+      );
 
     } catch (e) {
+      return jsonResponse(
+        {
+          ok: false,
 
-      return jsonResponse({
+          source_id:
+            sourceId,
 
-        ok:
-          false,
+          dataset_id:
+            sourceId,
 
-        source_id:
-          sourceId,
+          source_url:
+            url,
 
-        dataset_id:
-          sourceId,
+          acquired_at:
+            acquiredAt,
 
-        source_url:
-          url,
-
-        acquired_at:
-          acquiredAt,
-
-        error:
-          "upstream_fetch_failed"
-
-      }, 502);
+          error:
+            "upstream_fetch_failed"
+        },
+        502
+      );
     }
   }
 };
