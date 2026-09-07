@@ -56,7 +56,9 @@ function numericValue(value) {
     return null;
   }
 
-  const s = String(value).trim().replace(/,/g, "");
+  const s = String(value)
+    .trim()
+    .replace(/,/g, "");
 
   if (s === "" || s === "..." || s === "-") {
     return null;
@@ -76,7 +78,9 @@ function isValidJisdorDate(value) {
     .split("-")
     .map(Number);
 
-  const d = new Date(Date.UTC(yyyy, mm - 1, dd));
+  const d = new Date(
+    Date.UTC(yyyy, mm - 1, dd)
+  );
 
   return (
     d.getUTCFullYear() === yyyy &&
@@ -90,10 +94,15 @@ function jisdorDateToUtc(value) {
     .split("-")
     .map(Number);
 
-  return new Date(Date.UTC(yyyy, mm - 1, dd));
+  return new Date(
+    Date.UTC(yyyy, mm - 1, dd)
+  );
 }
 
-function buildJisdorSoapBody(startDate, endDate) {
+function buildJisdorSoapBody(
+  startDate,
+  endDate
+) {
   return `<?xml version="1.0" encoding="utf-8"?>
 <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
                xmlns:xsd="http://www.w3.org/2001/XMLSchema"
@@ -136,39 +145,45 @@ function inspectJisdorXml(xml) {
     )
   ];
 
-  const tables = tableMatches.map((m, i) => {
-    const block = m[1] || "";
+  const tables = tableMatches.map(
+    (m, i) => {
+      const block = m[1] || "";
 
-    const fieldMatches = [
-      ...block.matchAll(
-        /<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([^<]*)<\/\1>/g
-      )
-    ];
+      const rowMatches = [
+        ...block.matchAll(
+          /<([A-Za-z_][\w:.-]*)(?:\s[^>]*)?>([^<]*)<\/\1>/g
+        )
+      ];
 
-    const fields = [
-      ...new Set(
-        fieldMatches.map(x => x[1])
-      )
-    ];
+      const fields = [
+        ...new Set(
+          rowMatches.map(x => x[1])
+        )
+      ];
 
-    return {
-      index: i,
-      bytes: new TextEncoder()
-        .encode(block)
-        .length,
+      return {
+        index: i,
 
-      fields: fields.slice(0, 100),
+        bytes:
+          new TextEncoder()
+            .encode(block)
+            .length,
 
-      sample_values: fieldMatches
-        .slice(0, 30)
-        .map(x => ({
-          field: x[1],
-          value: x[2]
-            .trim()
-            .slice(0, 200)
-        }))
-    };
-  });
+        fields:
+          fields.slice(0, 100),
+
+        sample_values:
+          rowMatches
+            .slice(0, 30)
+            .map(x => ({
+              field: x[1],
+              value: x[2]
+                .trim()
+                .slice(0, 200)
+            }))
+      };
+    }
+  );
 
   const schemaElements = [
     ...xml.matchAll(
@@ -176,30 +191,35 @@ function inspectJisdorXml(xml) {
     )
   ].map(m => m[1]);
 
-  const allElementNames = extractTagNames(xml);
+  const allElementNames =
+    extractTagNames(xml);
 
   return {
-    table_count: tables.length,
+    table_count:
+      tables.length,
 
     tables,
 
-    schema_element_names: [
-      ...new Set(schemaElements)
-    ].slice(0, 200),
+    schema_element_names:
+      [
+        ...new Set(schemaElements)
+      ].slice(0, 200),
 
-    all_element_names: allElementNames,
+    all_element_names:
+      allElementNames,
 
-    jisdor_keyword_hits: [
-      ...new Set(
-        (
-          xml.match(
-            /[^<]*jisdor[^<]*/gi
-          ) || []
-        ).map(x =>
-          x.trim().slice(0, 200)
+    jisdor_keyword_hits:
+      [
+        ...new Set(
+          (
+            xml.match(
+              /[^<]*jisdor[^<]*/gi
+            ) || []
+          ).map(x =>
+            x.trim().slice(0, 200)
+          )
         )
-      )
-    ].slice(0, 50)
+      ].slice(0, 50)
   };
 }
 
@@ -218,22 +238,25 @@ async function fetchJisdorOperation(
   const acquiredAt =
     new Date().toISOString();
 
-  const r = await fetch(sourceUrl, {
-    method: "POST",
+  const r = await fetch(
+    sourceUrl,
+    {
+      method: "POST",
 
-    headers: {
-      "Content-Type":
-        "application/x-www-form-urlencoded; charset=UTF-8",
+      headers: {
+        "Content-Type":
+          "application/x-www-form-urlencoded; charset=UTF-8",
 
-      "Accept":
-        "text/xml, application/xml",
+        "Accept":
+          "text/xml, application/xml",
 
-      "User-Agent":
-        "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.14-JISDOR-DIAG"
-    },
+        "User-Agent":
+          "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.14-JISDOR-DIAG"
+      },
 
-    body
-  });
+      body
+    }
+  );
 
   const responseBody =
     await r.text();
@@ -241,16 +264,20 @@ async function fetchJisdorOperation(
   return {
     operation,
 
-    source_url: sourceUrl,
+    source_url:
+      sourceUrl,
 
-    acquired_at: acquiredAt,
+    acquired_at:
+      acquiredAt,
 
-    status_code: r.status,
+    status_code:
+      r.status,
 
     content_type:
       r.headers.get("content-type") || "",
 
-    request_params: params,
+    request_params:
+      params,
 
     request_body_sha256:
       await sha256(body),
@@ -279,7 +306,10 @@ async function fetchJisdorOperation(
   };
 }
 
-async function probeJisdorStructure(u, env) {
+async function probeJisdorStructure(
+  u,
+  env
+) {
   const startDate =
     u.searchParams.get("startDate") ||
     "01-01-2026";
@@ -314,15 +344,19 @@ async function probeJisdorStructure(u, env) {
         "getSubKursJisdor3",
         {
           mts: "USD",
-          startDate: normalizedStart,
-          endDate: normalizedEnd
+          startDate:
+            normalizedStart,
+          endDate:
+            normalizedEnd
         },
         env
       )
     );
   } catch (e) {
     results.push({
-      operation: "getSubKursJisdor3",
+      operation:
+        "getSubKursJisdor3",
+
       error:
         String(
           e?.message || e
@@ -331,22 +365,21 @@ async function probeJisdorStructure(u, env) {
   }
 
   try {
-    /*
-     * JISDOR4 is the official
-     * single-date all-currency operation.
-     */
     results.push(
       await fetchJisdorOperation(
         "getSubKursJisdor4",
         {
-          startDate: normalizedStart
+          startDate:
+            normalizedStart
         },
         env
       )
     );
   } catch (e) {
     results.push({
-      operation: "getSubKursJisdor4",
+      operation:
+        "getSubKursJisdor4",
+
       error:
         String(
           e?.message || e
@@ -359,23 +392,205 @@ async function probeJisdorStructure(u, env) {
 
     diagnostic_only: true,
 
-    source_id: "jisdor",
+    source_id:
+      "jisdor",
 
-    dataset_id: "JISDOR",
+    dataset_id:
+      "JISDOR",
 
     note:
       "Diagnostic only. No corpus persistence. Jisdor3 structure + Jisdor4 single-date cross-check.",
 
     request: {
-      startDate: normalizedStart,
-      endDate: normalizedEnd
+      startDate:
+        normalizedStart,
+
+      endDate:
+        normalizedEnd
     },
 
     results
   });
 }
 
-async function probeJisdorDateFormats(u, env) {
+async function probeJisdorSingle(
+  u,
+  env
+) {
+  const date =
+    u.searchParams.get("date") ||
+    "02-01-2026";
+
+  if (!isValidJisdorDate(date)) {
+    return jsonResponse(
+      {
+        ok: false,
+
+        diagnostic_only: true,
+
+        source_id:
+          "jisdor",
+
+        dataset_id:
+          "JISDOR",
+
+        error:
+          "invalid_date",
+
+        expected:
+          "DD-MM-YYYY"
+      },
+      400
+    );
+  }
+
+  const sourceUrl =
+    "https://www.bi.go.id/biwebservice/wskursbi.asmx/getSubKursJisdor2";
+
+  const body =
+    `tgl=${encodeURIComponent(date)}`;
+
+  const acquiredAt =
+    new Date().toISOString();
+
+  try {
+    const r = await fetch(
+      sourceUrl,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type":
+            "application/x-www-form-urlencoded; charset=UTF-8",
+
+          "Accept":
+            "text/xml, application/xml",
+
+          "User-Agent":
+            "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.15-JISDOR-SINGLE-DIAG"
+        },
+
+        body
+      }
+    );
+
+    const responseBody =
+      await r.text();
+
+    const inspection =
+      inspectJisdorXml(
+        responseBody
+      );
+
+    return jsonResponse(
+      {
+        ok: r.ok,
+
+        diagnostic_only: true,
+
+        source_id:
+          "jisdor",
+
+        dataset_id:
+          "JISDOR",
+
+        operation:
+          "getSubKursJisdor2",
+
+        source_url:
+          sourceUrl,
+
+        acquired_at:
+          acquiredAt,
+
+        request: {
+          tgl: date
+        },
+
+        request_body_sha256:
+          await sha256(body),
+
+        status_code:
+          r.status,
+
+        content_type:
+          r.headers.get(
+            "content-type"
+          ) || "",
+
+        body_bytes:
+          new TextEncoder()
+            .encode(responseBody)
+            .length,
+
+        body_sha256:
+          await sha256(
+            responseBody
+          ),
+
+        has_dataset:
+          /<DataSet(?:\s|>)/i
+            .test(responseBody),
+
+        has_html:
+          /<\s*!doctype\s+html|<\s*html(?:\s|>)/i
+            .test(responseBody),
+
+        inspection,
+
+        body:
+          responseBody.slice(
+            0,
+            20000
+          )
+      },
+
+      r.ok ? 200 : 502
+    );
+
+  } catch (e) {
+    return jsonResponse(
+      {
+        ok: false,
+
+        diagnostic_only: true,
+
+        source_id:
+          "jisdor",
+
+        dataset_id:
+          "JISDOR",
+
+        operation:
+          "getSubKursJisdor2",
+
+        source_url:
+          sourceUrl,
+
+        acquired_at:
+          acquiredAt,
+
+        request: {
+          tgl: date
+        },
+
+        error:
+          "upstream_fetch_failed",
+
+        detail:
+          String(
+            e?.message || e
+          ).slice(0, 1000)
+      },
+      502
+    );
+  }
+}
+
+async function probeJisdorDateFormats(
+  u,
+  env
+) {
   const startDate =
     u.searchParams.get("startDate") ||
     "01-01-2026";
@@ -398,31 +613,43 @@ async function probeJisdorDateFormats(u, env) {
 
   const candidates = [
     {
-      name: "DD-MM-YYYY",
+      name:
+        "DD-MM-YYYY",
+
       startDate,
+
       endDate
     },
 
     {
-      name: "YYYY-MM-DD",
+      name:
+        "YYYY-MM-DD",
+
       startDate:
         `${yyyy}-${mm}-${dd}`,
+
       endDate:
         `${yyyy2}-${mm2}-${dd2}`
     },
 
     {
-      name: "DD/MM/YYYY",
+      name:
+        "DD/MM/YYYY",
+
       startDate:
         `${dd}/${mm}/${yyyy}`,
+
       endDate:
         `${dd2}/${mm2}/${yyyy2}`
     },
 
     {
-      name: "MM/DD/YYYY",
+      name:
+        "MM/DD/YYYY",
+
       startDate:
         `${mm}/${dd}/${yyyy}`,
+
       endDate:
         `${mm2}/${dd2}/${yyyy2}`
     }
@@ -433,35 +660,41 @@ async function probeJisdorDateFormats(u, env) {
 
   const results = [];
 
-  for (const candidate of candidates) {
+  for (
+    const candidate of candidates
+  ) {
     const body =
       `mts=${encodeURIComponent("USD")}` +
       `&startDate=${encodeURIComponent(candidate.startDate)}` +
       `&endDate=${encodeURIComponent(candidate.endDate)}`;
 
     try {
-      const r = await fetch(sourceUrl, {
-        method: "POST",
+      const r = await fetch(
+        sourceUrl,
+        {
+          method: "POST",
 
-        headers: {
-          "Content-Type":
-            "application/x-www-form-urlencoded; charset=UTF-8",
+          headers: {
+            "Content-Type":
+              "application/x-www-form-urlencoded; charset=UTF-8",
 
-          "Accept":
-            "text/xml, application/xml",
+            "Accept":
+              "text/xml, application/xml",
 
-          "User-Agent":
-            "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13-PROBE"
-        },
+            "User-Agent":
+              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13-PROBE"
+          },
 
-        body
-      });
+          body
+        }
+      );
 
       const responseBody =
         await r.text();
 
       results.push({
-        format: candidate.name,
+        format:
+          candidate.name,
 
         startDate:
           candidate.startDate,
@@ -473,7 +706,9 @@ async function probeJisdorDateFormats(u, env) {
           r.status,
 
         content_type:
-          r.headers.get("content-type") || "",
+          r.headers.get(
+            "content-type"
+          ) || "",
 
         body_bytes:
           new TextEncoder()
@@ -481,7 +716,9 @@ async function probeJisdorDateFormats(u, env) {
             .length,
 
         body_sha256:
-          await sha256(responseBody),
+          await sha256(
+            responseBody
+          ),
 
         has_dataset:
           /<DataSet(?:\s|>)/i
@@ -505,9 +742,11 @@ async function probeJisdorDateFormats(u, env) {
             ) || []
           ).length
       });
+
     } catch (e) {
       results.push({
-        format: candidate.name,
+        format:
+          candidate.name,
 
         startDate:
           candidate.startDate,
@@ -528,11 +767,14 @@ async function probeJisdorDateFormats(u, env) {
 
     diagnostic_only: true,
 
-    source_id: "jisdor",
+    source_id:
+      "jisdor",
 
-    dataset_id: "JISDOR",
+    dataset_id:
+      "JISDOR",
 
-    source_url: sourceUrl,
+    source_url:
+      sourceUrl,
 
     note:
       "Diagnostic only. Results are not corpus evidence and are not persisted.",
@@ -541,7 +783,10 @@ async function probeJisdorDateFormats(u, env) {
   });
 }
 
-async function fetchJisdorBatch(u, env) {
+async function fetchJisdorBatch(
+  u,
+  env
+) {
   const startDate =
     u.searchParams.get("startDate");
 
@@ -553,9 +798,11 @@ async function fetchJisdorBatch(u, env) {
       {
         ok: false,
 
-        source_id: "jisdor",
+        source_id:
+          "jisdor",
 
-        dataset_id: "JISDOR",
+        dataset_id:
+          "JISDOR",
 
         error:
           "missing_startDate_or_endDate",
@@ -575,9 +822,11 @@ async function fetchJisdorBatch(u, env) {
       {
         ok: false,
 
-        source_id: "jisdor",
+        source_id:
+          "jisdor",
 
-        dataset_id: "JISDOR",
+        dataset_id:
+          "JISDOR",
 
         error:
           "invalid_date_format_or_date",
@@ -590,19 +839,25 @@ async function fetchJisdorBatch(u, env) {
   }
 
   const start =
-    jisdorDateToUtc(startDate);
+    jisdorDateToUtc(
+      startDate
+    );
 
   const end =
-    jisdorDateToUtc(endDate);
+    jisdorDateToUtc(
+      endDate
+    );
 
   if (end < start) {
     return jsonResponse(
       {
         ok: false,
 
-        source_id: "jisdor",
+        source_id:
+          "jisdor",
 
-        dataset_id: "JISDOR",
+        dataset_id:
+          "JISDOR",
 
         error:
           "end_date_before_start_date"
@@ -613,7 +868,8 @@ async function fetchJisdorBatch(u, env) {
 
   const rangeDays =
     Math.floor(
-      (end - start) / 86400000
+      (end - start) /
+      86400000
     );
 
   if (rangeDays > 366) {
@@ -621,14 +877,17 @@ async function fetchJisdorBatch(u, env) {
       {
         ok: false,
 
-        source_id: "jisdor",
+        source_id:
+          "jisdor",
 
-        dataset_id: "JISDOR",
+        dataset_id:
+          "JISDOR",
 
         error:
           "date_range_too_large",
 
-        max_days: 366
+        max_days:
+          366
       },
       400
     );
@@ -646,22 +905,25 @@ async function fetchJisdorBatch(u, env) {
     new Date().toISOString();
 
   try {
-    const r = await fetch(sourceUrl, {
-      method: "POST",
+    const r = await fetch(
+      sourceUrl,
+      {
+        method: "POST",
 
-      headers: {
-        "Content-Type":
-          "application/x-www-form-urlencoded; charset=UTF-8",
+        headers: {
+          "Content-Type":
+            "application/x-www-form-urlencoded; charset=UTF-8",
 
-        "Accept":
-          "text/xml, application/xml",
+          "Accept":
+            "text/xml, application/xml",
 
-        "User-Agent":
-          "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-      },
+          "User-Agent":
+            "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
+        },
 
-      body
-    });
+        body
+      }
+    );
 
     const responseBody =
       await r.text();
@@ -672,27 +934,41 @@ async function fetchJisdorBatch(u, env) {
         .length;
 
     const bodySha256 =
-      await sha256(responseBody);
+      await sha256(
+        responseBody
+      );
 
     const contentType =
-      r.headers.get("content-type") || "";
+      r.headers.get(
+        "content-type"
+      ) || "";
 
     const trimmedBody =
       responseBody.trim();
 
     const looksLikeXml =
-      /^<\?xml[\s\S]*</i.test(trimmedBody) ||
-      /^<DataSet[\s\S]*</i.test(trimmedBody) ||
-      /^<soap:Envelope[\s\S]*</i.test(trimmedBody);
+      /^<\?xml[\s\S]*</i
+        .test(trimmedBody) ||
+
+      /^<DataSet[\s\S]*</i
+        .test(trimmedBody) ||
+
+      /^<soap:Envelope[\s\S]*</i
+        .test(trimmedBody);
 
     const looksLikeHtml =
       /<\s*!doctype\s+html|<\s*html(?:\s|>)/i
         .test(trimmedBody);
 
     const looksLikeJisdor =
-      /<DataSet(?:\s|>)/i.test(responseBody) ||
-      /<getSubKursJisdor3Response(?:\s|>)/i.test(responseBody) ||
-      /<(?:Table|tgl_subkursjisdor|nilai_subkursjisdor)(?:\s|>)/i.test(responseBody);
+      /<DataSet(?:\s|>)/i
+        .test(responseBody) ||
+
+      /<getSubKursJisdor3Response(?:\s|>)/i
+        .test(responseBody) ||
+
+      /<(?:Table|tgl_subkursjisdor|nilai_subkursjisdor)(?:\s|>)/i
+        .test(responseBody);
 
     if (
       r.ok &&
@@ -706,15 +982,20 @@ async function fetchJisdorBatch(u, env) {
         {
           ok: false,
 
-          source_id: "jisdor",
+          source_id:
+            "jisdor",
 
-          dataset_id: "JISDOR",
+          dataset_id:
+            "JISDOR",
 
-          source_url: sourceUrl,
+          source_url:
+            sourceUrl,
 
-          status_code: r.status,
+          status_code:
+            r.status,
 
-          acquired_at: acquiredAt,
+          acquired_at:
+            acquiredAt,
 
           request_start_date:
             startDate,
@@ -722,19 +1003,24 @@ async function fetchJisdorBatch(u, env) {
           request_end_date:
             endDate,
 
-          request_fingerprint_material: {
-            url: sourceUrl,
+          request_fingerprint_material:
+            {
+              url:
+                sourceUrl,
 
-            method: "POST",
+              method:
+                "POST",
 
-            params: {
-              mts: "USD",
+              params:
+                {
+                  mts:
+                    "USD",
 
-              startDate,
+                  startDate,
 
-              endDate
-            }
-          },
+                  endDate
+                }
+            },
 
           request_body_sha256:
             await sha256(body),
@@ -754,12 +1040,17 @@ async function fetchJisdorBatch(u, env) {
           reason:
             looksLikeHtml
               ? "html_payload"
+
               : !looksLikeXml
                 ? "non_xml_payload"
+
                 : "jisdor_structure_not_detected",
 
           body:
-            responseBody.slice(0, 4000)
+            responseBody.slice(
+              0,
+              4000
+            )
         },
         502
       );
@@ -770,15 +1061,20 @@ async function fetchJisdorBatch(u, env) {
         {
           ok: false,
 
-          source_id: "jisdor",
+          source_id:
+            "jisdor",
 
-          dataset_id: "JISDOR",
+          dataset_id:
+            "JISDOR",
 
-          source_url: sourceUrl,
+          source_url:
+            sourceUrl,
 
-          status_code: r.status,
+          status_code:
+            r.status,
 
-          acquired_at: acquiredAt,
+          acquired_at:
+            acquiredAt,
 
           request_start_date:
             startDate,
@@ -793,13 +1089,18 @@ async function fetchJisdorBatch(u, env) {
             bodySha256,
 
           content_type:
-            r.headers.get("content-type") || "",
+            r.headers.get(
+              "content-type"
+            ) || "",
 
           error:
             "upstream_rate_limited",
 
           body:
-            responseBody.slice(0, 2000)
+            responseBody.slice(
+              0,
+              2000
+            )
         },
         429
       );
@@ -810,15 +1111,20 @@ async function fetchJisdorBatch(u, env) {
         {
           ok: false,
 
-          source_id: "jisdor",
+          source_id:
+            "jisdor",
 
-          dataset_id: "JISDOR",
+          dataset_id:
+            "JISDOR",
 
-          source_url: sourceUrl,
+          source_url:
+            sourceUrl,
 
-          status_code: r.status,
+          status_code:
+            r.status,
 
-          acquired_at: acquiredAt,
+          acquired_at:
+            acquiredAt,
 
           request_start_date:
             startDate,
@@ -833,13 +1139,18 @@ async function fetchJisdorBatch(u, env) {
             bodySha256,
 
           content_type:
-            r.headers.get("content-type") || "",
+            r.headers.get(
+              "content-type"
+            ) || "",
 
           error:
             "upstream_server_error",
 
           body:
-            responseBody.slice(0, 2000)
+            responseBody.slice(
+              0,
+              2000
+            )
         },
         502
       );
@@ -847,17 +1158,23 @@ async function fetchJisdorBatch(u, env) {
 
     return jsonResponse(
       {
-        ok: r.ok,
+        ok:
+          r.ok,
 
-        source_id: "jisdor",
+        source_id:
+          "jisdor",
 
-        dataset_id: "JISDOR",
+        dataset_id:
+          "JISDOR",
 
-        source_url: sourceUrl,
+        source_url:
+          sourceUrl,
 
-        status_code: r.status,
+        status_code:
+          r.status,
 
-        acquired_at: acquiredAt,
+        acquired_at:
+          acquiredAt,
 
         request_start_date:
           startDate,
@@ -865,19 +1182,24 @@ async function fetchJisdorBatch(u, env) {
         request_end_date:
           endDate,
 
-        request_fingerprint_material: {
-          url: sourceUrl,
+        request_fingerprint_material:
+          {
+            url:
+              sourceUrl,
 
-          method: "POST",
+            method:
+              "POST",
 
-          params: {
-            mts: "USD",
+            params:
+              {
+                mts:
+                  "USD",
 
-            startDate,
+                startDate,
 
-            endDate
-          }
-        },
+                endDate
+              }
+          },
 
         request_body_sha256:
           await sha256(body),
@@ -894,6 +1216,7 @@ async function fetchJisdorBatch(u, env) {
         body:
           responseBody
       },
+
       r.ok ? 200 : 502
     );
 
@@ -902,13 +1225,17 @@ async function fetchJisdorBatch(u, env) {
       {
         ok: false,
 
-        source_id: "jisdor",
+        source_id:
+          "jisdor",
 
-        dataset_id: "JISDOR",
+        dataset_id:
+          "JISDOR",
 
-        source_url: sourceUrl,
+        source_url:
+          sourceUrl,
 
-        acquired_at: acquiredAt,
+        acquired_at:
+          acquiredAt,
 
         request_start_date:
           startDate,
@@ -943,6 +1270,7 @@ function validateBlsPayload(
   ) {
     return {
       ok: false,
+
       reason:
         "bls_api_status_not_succeeded"
     };
@@ -957,16 +1285,19 @@ function validateBlsPayload(
   ) {
     return {
       ok: false,
+
       reason:
         "unexpected_series_shape"
     };
   }
 
   if (
-    series[0]?.seriesID !== expected
+    series[0]?.seriesID !==
+    expected
   ) {
     return {
       ok: false,
+
       reason:
         "unexpected_series_id"
     };
@@ -981,22 +1312,27 @@ function validateBlsPayload(
   ) {
     return {
       ok: false,
+
       reason:
         "no_observations"
     };
   }
 
   const currentYear =
-    new Date().getUTCFullYear();
+    new Date()
+      .getUTCFullYear();
 
   const monthly =
     data.filter(x =>
       isMonthly(x.period)
     );
 
-  if (monthly.length === 0) {
+  if (
+    monthly.length === 0
+  ) {
     return {
       ok: false,
+
       reason:
         "no_monthly_observations"
     };
@@ -1010,6 +1346,7 @@ function validateBlsPayload(
     ) {
       return {
         ok: false,
+
         reason:
           "invalid_year"
       };
@@ -1021,6 +1358,7 @@ function validateBlsPayload(
     ) {
       return {
         ok: false,
+
         reason:
           "future_year_observation"
       };
@@ -1031,11 +1369,15 @@ function validateBlsPayload(
     monthly
       .map(row => ({
         ...row,
+
         numeric_value:
-          numericValue(row.value)
+          numericValue(
+            row.value
+          )
       }))
       .filter(row =>
-        row.numeric_value !== null
+        row.numeric_value !==
+        null
       );
 
   if (
@@ -1043,20 +1385,12 @@ function validateBlsPayload(
   ) {
     return {
       ok: false,
+
       reason:
         "no_numeric_monthly_observations"
     };
   }
 
-  /*
-   * BLS can return a successful response
-   * containing a placeholder such as "..."
-   * for a not-yet-available monthly
-   * observation.
-   *
-   * Do not silently convert that into
-   * a value.
-   */
   const latestRaw =
     monthly[0];
 
@@ -1117,9 +1451,10 @@ async function fetchBls(
     endYear - 2;
 
   const payload = {
-    seriesid: [
-      BLS_SERIES[sourceId]
-    ],
+    seriesid:
+      [
+        BLS_SERIES[sourceId]
+      ],
 
     startyear:
       String(startYear),
@@ -1143,23 +1478,27 @@ async function fetchBls(
       new Date().toISOString();
 
     try {
-      const r = await fetch(
-        SOURCES[sourceId],
-        {
-          method: "POST",
+      const r =
+        await fetch(
+          SOURCES[sourceId],
+          {
+            method:
+              "POST",
 
-          headers: {
-            "Content-Type":
-              "application/json",
+            headers: {
+              "Content-Type":
+                "application/json",
 
-            "User-Agent":
-              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-          },
+              "User-Agent":
+                "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
+            },
 
-          body:
-            JSON.stringify(payload)
-        }
-      );
+            body:
+              JSON.stringify(
+                payload
+              )
+          }
+        );
 
       const body =
         await r.text();
@@ -1226,7 +1565,10 @@ async function fetchBls(
               "bls_upstream_http_error",
 
             upstream_body:
-              body.slice(0, 2000)
+              body.slice(
+                0,
+                2000
+              )
           },
           502
         );
@@ -1377,7 +1719,10 @@ async function fetchBls(
         "upstream_fetch_failed_after_retries",
 
       upstream_body:
-        lastBody.slice(0, 2000)
+        lastBody.slice(
+          0,
+          2000
+        )
     },
     502
   );
@@ -1397,7 +1742,10 @@ export default {
       );
     }
 
-    if (u.pathname === "/health") {
+    if (
+      u.pathname ===
+      "/health"
+    ) {
       return jsonResponse({
         ok: true,
 
@@ -1409,12 +1757,33 @@ export default {
       });
     }
 
-    /*
-     * Dedicated diagnostic route:
-     * test multiple date encodings.
-     *
-     * No corpus persistence.
-     */
+    if (
+      u.pathname ===
+      "/jisdor_probe_single"
+    ) {
+      if (
+        env.RELAY_TOKEN &&
+        req.headers.get(
+          "Authorization"
+        ) !==
+          `Bearer ${env.RELAY_TOKEN}`
+      ) {
+        return jsonResponse(
+          {
+            ok: false,
+            error:
+              "unauthorized"
+          },
+          401
+        );
+      }
+
+      return probeJisdorSingle(
+        u,
+        env
+      );
+    }
+
     if (
       u.pathname ===
       "/jisdor_probe"
@@ -1442,15 +1811,9 @@ export default {
       );
     }
 
-    /*
-     * Production-facing dedicated
-     * JISDOR batch relay.
-     *
-     * Kept separate from legacy
-     * /fuel/jisdor route.
-     */
     if (
-      u.pathname === "/jisdor"
+      u.pathname ===
+      "/jisdor"
     ) {
       if (
         env.RELAY_TOKEN &&
@@ -1475,17 +1838,6 @@ export default {
       );
     }
 
-    /*
-     * Structural diagnostic:
-     *
-     * Jisdor3:
-     *   currency + date range
-     *
-     * Jisdor4:
-     *   all currencies for one date
-     *
-     * No corpus persistence.
-     */
     if (
       u.pathname ===
       "/jisdor_probe_structure"
@@ -1561,22 +1913,24 @@ export default {
       new Date().toISOString();
 
     try {
-      const r = await fetch(
-        url,
-        {
-          headers: {
-            "User-Agent":
-              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
+      const r =
+        await fetch(
+          url,
+          {
+            headers: {
+              "User-Agent":
+                "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
+            }
           }
-        }
-      );
+        );
 
       const body =
         await r.text();
 
       return jsonResponse(
         {
-          ok: r.ok,
+          ok:
+            r.ok,
 
           source_id:
             sourceId,
@@ -1608,6 +1962,7 @@ export default {
 
           body
         },
+
         r.ok
           ? 200
           : 502
