@@ -1,3 +1,14 @@
+// worker.js — MACRO FUEL RELAY v0.2.16
+// JISDOR FINAL DIAGNOSTIC MATRIX
+//
+// Diagnostic routes:
+//   /jisdor_probe
+//   /jisdor_probe_structure
+//   /jisdor_probe_single
+//   /jisdor_probe_matrix
+//
+// No diagnostic route persists corpus evidence.
+
 const SOURCES = {
   bi_rate: "https://www.bi.go.id/id/statistik/indikator/bi-rate.aspx",
   us10y: "https://home.treasury.gov/resource-center/data-chart-center/interest-rates/TextView?type=daily_treasury_yield_curve&field_tdr_date_value=2026",
@@ -104,11 +115,13 @@ function buildJisdorSoapBody(
   endDate
 ) {
   return `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+<soap:Envelope
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
   <soap:Body>
-    <getSubKursJisdor3 xmlns="http://tempuri.org/">
+    <getSubKursJisdor3
+      xmlns="http://tempuri.org/">
       <mts>USD</mts>
       <startDate>${startDate}</startDate>
       <endDate>${endDate}</endDate>
@@ -783,20 +796,511 @@ async function probeJisdorDateFormats(
   });
 }
 
+async function probeJisdor2Matrix(
+  u,
+  env
+) {
+  const date =
+    u.searchParams.get("date") ||
+    "02-01-2026";
+
+  if (!isValidJisdorDate(date)) {
+    return jsonResponse(
+      {
+        ok: false,
+
+        diagnostic_only: true,
+
+        source_id:
+          "jisdor",
+
+        dataset_id:
+          "JISDOR",
+
+        operation:
+          "getSubKursJisdor2",
+
+        error:
+          "invalid_date",
+
+        expected:
+          "DD-MM-YYYY"
+      },
+      400
+    );
+  }
+
+  const [
+    dd,
+    mm,
+    yyyy
+  ] = date.split("-");
+
+  const variants = [
+    {
+      name:
+        "DD-MM-YYYY",
+
+      value:
+        date
+    },
+
+    {
+      name:
+        "DD/MM/YYYY",
+
+      value:
+        `${dd}/${mm}/${yyyy}`
+    },
+
+    {
+      name:
+        "MM/DD/YYYY",
+
+      value:
+        `${mm}/${dd}/${yyyy}`
+    },
+
+    {
+      name:
+        "YYYY-MM-DD",
+
+      value:
+        `${yyyy}-${mm}-${dd}`
+    },
+
+    {
+      name:
+        "YYYYMMDD",
+
+      value:
+        `${yyyy}${mm}${dd}`
+    },
+
+    {
+      name:
+        "DD.MM.YYYY",
+
+      value:
+        `${dd}.${mm}.${yyyy}`
+    }
+  ];
+
+  const endpoint =
+    "https://www.bi.go.id/biwebservice/wskursbi.asmx/getSubKursJisdor2";
+
+  const results = [];
+
+  /*
+   * --------------------------------------------------
+   * TEST 1 — HTTP POST form-urlencoded
+   * --------------------------------------------------
+   */
+
+  for (const v of variants) {
+    try {
+      const body =
+        `tgl=${encodeURIComponent(v.value)}`;
+
+      const r = await fetch(
+        endpoint,
+        {
+          method:
+            "POST",
+
+          headers: {
+            "Content-Type":
+              "application/x-www-form-urlencoded; charset=UTF-8",
+
+            "Accept":
+              "text/xml, application/xml",
+
+            "User-Agent":
+              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.16-JISDOR-MATRIX"
+          },
+
+          body
+        }
+      );
+
+      const responseBody =
+        await r.text();
+
+      const inspection =
+        inspectJisdorXml(
+          responseBody
+        );
+
+      results.push({
+        format:
+          v.name,
+
+        transport:
+          "POST_FORM",
+
+        parameter: {
+          tgl:
+            v.value
+        },
+
+        status_code:
+          r.status,
+
+        content_type:
+          r.headers.get(
+            "content-type"
+          ) || "",
+
+        body_bytes:
+          new TextEncoder()
+            .encode(responseBody)
+            .length,
+
+        body_sha256:
+          await sha256(
+            responseBody
+          ),
+
+        has_dataset:
+          /<DataSet(?:\s|>)/i
+            .test(responseBody),
+
+        has_html:
+          /<\s*!doctype\s+html|<\s*html(?:\s|>)/i
+            .test(responseBody),
+
+        table_count:
+          inspection.table_count,
+
+        schema_element_names:
+          inspection.schema_element_names,
+
+        sample_tables:
+          inspection.tables.slice(
+            0,
+            3
+          )
+      });
+
+    } catch (e) {
+      results.push({
+        format:
+          v.name,
+
+        transport:
+          "POST_FORM",
+
+        parameter: {
+          tgl:
+            v.value
+        },
+
+        error:
+          String(
+            e?.message || e
+          ).slice(0, 500)
+      });
+    }
+
+    /*
+     * --------------------------------------------------
+     * TEST 2 — HTTP GET
+     * --------------------------------------------------
+     */
+
+    try {
+      const getUrl =
+        `${endpoint}?tgl=${encodeURIComponent(v.value)}`;
+
+      const r = await fetch(
+        getUrl,
+        {
+          method:
+            "GET",
+
+          headers: {
+            "Accept":
+              "text/xml, application/xml",
+
+            "User-Agent":
+              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.16-JISDOR-MATRIX"
+          }
+        }
+      );
+
+      const responseBody =
+        await r.text();
+
+      const inspection =
+        inspectJisdorXml(
+          responseBody
+        );
+
+      results.push({
+        format:
+          v.name,
+
+        transport:
+          "GET",
+
+        parameter: {
+          tgl:
+            v.value
+        },
+
+        status_code:
+          r.status,
+
+        content_type:
+          r.headers.get(
+            "content-type"
+          ) || "",
+
+        body_bytes:
+          new TextEncoder()
+            .encode(responseBody)
+            .length,
+
+        body_sha256:
+          await sha256(
+            responseBody
+          ),
+
+        has_dataset:
+          /<DataSet(?:\s|>)/i
+            .test(responseBody),
+
+        has_html:
+          /<\s*!doctype\s+html|<\s*html(?:\s|>)/i
+            .test(responseBody),
+
+        table_count:
+          inspection.table_count,
+
+        schema_element_names:
+          inspection.schema_element_names,
+
+        sample_tables:
+          inspection.tables.slice(
+            0,
+            3
+          )
+      });
+
+    } catch (e) {
+      results.push({
+        format:
+          v.name,
+
+        transport:
+          "GET",
+
+        parameter: {
+          tgl:
+            v.value
+        },
+
+        error:
+          String(
+            e?.message || e
+          ).slice(0, 500)
+      });
+    }
+  }
+
+  /*
+   * --------------------------------------------------
+   * TEST 3 — SOAP 1.1
+   * --------------------------------------------------
+   */
+
+  try {
+    const soapEndpoint =
+      "https://www.bi.go.id/biwebservice/wskursbi.asmx";
+
+    const soapBody =
+`<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+  xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <getSubKursJisdor2
+      xmlns="http://tempuri.org/">
+      <tgl>${date}</tgl>
+    </getSubKursJisdor2>
+  </soap:Body>
+</soap:Envelope>`.trim();
+
+    const r = await fetch(
+      soapEndpoint,
+      {
+        method:
+          "POST",
+
+        headers: {
+          "Content-Type":
+            "text/xml; charset=utf-8",
+
+          "SOAPAction":
+            "\"http://tempuri.org/getSubKursJisdor2\"",
+
+          "Accept":
+            "text/xml, application/xml",
+
+          "User-Agent":
+            "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.16-JISDOR-MATRIX"
+        },
+
+        body:
+          soapBody
+      }
+    );
+
+    const responseBody =
+      await r.text();
+
+    const inspection =
+      inspectJisdorXml(
+        responseBody
+      );
+
+    results.push({
+      format:
+        "DD-MM-YYYY",
+
+      transport:
+        "SOAP_1_1",
+
+      parameter: {
+        tgl:
+          date
+      },
+
+      status_code:
+        r.status,
+
+      content_type:
+        r.headers.get(
+          "content-type"
+        ) || "",
+
+      body_bytes:
+        new TextEncoder()
+          .encode(responseBody)
+          .length,
+
+      body_sha256:
+        await sha256(
+          responseBody
+        ),
+
+      has_dataset:
+        /<DataSet(?:\s|>)/i
+          .test(responseBody),
+
+      has_html:
+        /<\s*!doctype\s+html|<\s*html(?:\s|>)/i
+          .test(responseBody),
+
+      table_count:
+        inspection.table_count,
+
+      schema_element_names:
+        inspection.schema_element_names,
+
+      sample_tables:
+        inspection.tables.slice(
+          0,
+          3
+        )
+    });
+
+  } catch (e) {
+    results.push({
+      format:
+        "DD-MM-YYYY",
+
+      transport:
+        "SOAP_1_1",
+
+      error:
+        String(
+          e?.message || e
+        ).slice(0, 500)
+    });
+  }
+
+  const hits =
+    results.filter(
+      x =>
+        x.status_code === 200 &&
+        x.table_count > 0
+    );
+
+  return jsonResponse({
+    ok:
+      true,
+
+    diagnostic_only:
+      true,
+
+    source_id:
+      "jisdor",
+
+    dataset_id:
+      "JISDOR",
+
+    operation:
+      "getSubKursJisdor2",
+
+    date,
+
+    note:
+      "Final diagnostic matrix. No corpus persistence.",
+
+    tested_formats:
+      variants.map(
+        x => x.name
+      ),
+
+    tested_transports: [
+      "POST_FORM",
+      "GET",
+      "SOAP_1_1"
+    ],
+
+    successful_row_candidates:
+      hits.length,
+
+    conclusion_hint:
+      hits.length > 0
+        ? "DATA_FOUND — inspect matching result."
+        : "NO_ROWS_FOUND_ACROSS_MATRIX",
+
+    results
+  });
+}
+
 async function fetchJisdorBatch(
   u,
   env
 ) {
   const startDate =
-    u.searchParams.get("startDate");
+    u.searchParams.get(
+      "startDate"
+    );
 
   const endDate =
-    u.searchParams.get("endDate");
+    u.searchParams.get(
+      "endDate"
+    );
 
   if (!startDate || !endDate) {
     return jsonResponse(
       {
-        ok: false,
+        ok:
+          false,
 
         source_id:
           "jisdor",
@@ -815,12 +1319,17 @@ async function fetchJisdorBatch(
   }
 
   if (
-    !isValidJisdorDate(startDate) ||
-    !isValidJisdorDate(endDate)
+    !isValidJisdorDate(
+      startDate
+    ) ||
+    !isValidJisdorDate(
+      endDate
+    )
   ) {
     return jsonResponse(
       {
-        ok: false,
+        ok:
+          false,
 
         source_id:
           "jisdor",
@@ -844,1152 +1353,4 @@ async function fetchJisdorBatch(
     );
 
   const end =
-    jisdorDateToUtc(
-      endDate
-    );
-
-  if (end < start) {
-    return jsonResponse(
-      {
-        ok: false,
-
-        source_id:
-          "jisdor",
-
-        dataset_id:
-          "JISDOR",
-
-        error:
-          "end_date_before_start_date"
-      },
-      400
-    );
-  }
-
-  const rangeDays =
-    Math.floor(
-      (end - start) /
-      86400000
-    );
-
-  if (rangeDays > 366) {
-    return jsonResponse(
-      {
-        ok: false,
-
-        source_id:
-          "jisdor",
-
-        dataset_id:
-          "JISDOR",
-
-        error:
-          "date_range_too_large",
-
-        max_days:
-          366
-      },
-      400
-    );
-  }
-
-  const sourceUrl =
-    "https://www.bi.go.id/biwebservice/wskursbi.asmx/getSubKursJisdor3";
-
-  const body =
-    `mts=${encodeURIComponent("USD")}` +
-    `&startDate=${encodeURIComponent(startDate)}` +
-    `&endDate=${encodeURIComponent(endDate)}`;
-
-  const acquiredAt =
-    new Date().toISOString();
-
-  try {
-    const r = await fetch(
-      sourceUrl,
-      {
-        method: "POST",
-
-        headers: {
-          "Content-Type":
-            "application/x-www-form-urlencoded; charset=UTF-8",
-
-          "Accept":
-            "text/xml, application/xml",
-
-          "User-Agent":
-            "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-        },
-
-        body
-      }
-    );
-
-    const responseBody =
-      await r.text();
-
-    const bodyBytes =
-      new TextEncoder()
-        .encode(responseBody)
-        .length;
-
-    const bodySha256 =
-      await sha256(
-        responseBody
-      );
-
-    const contentType =
-      r.headers.get(
-        "content-type"
-      ) || "";
-
-    const trimmedBody =
-      responseBody.trim();
-
-    const looksLikeXml =
-      /^<\?xml[\s\S]*</i
-        .test(trimmedBody) ||
-
-      /^<DataSet[\s\S]*</i
-        .test(trimmedBody) ||
-
-      /^<soap:Envelope[\s\S]*</i
-        .test(trimmedBody);
-
-    const looksLikeHtml =
-      /<\s*!doctype\s+html|<\s*html(?:\s|>)/i
-        .test(trimmedBody);
-
-    const looksLikeJisdor =
-      /<DataSet(?:\s|>)/i
-        .test(responseBody) ||
-
-      /<getSubKursJisdor3Response(?:\s|>)/i
-        .test(responseBody) ||
-
-      /<(?:Table|tgl_subkursjisdor|nilai_subkursjisdor)(?:\s|>)/i
-        .test(responseBody);
-
-    if (
-      r.ok &&
-      (
-        !looksLikeXml ||
-        looksLikeHtml ||
-        !looksLikeJisdor
-      )
-    ) {
-      return jsonResponse(
-        {
-          ok: false,
-
-          source_id:
-            "jisdor",
-
-          dataset_id:
-            "JISDOR",
-
-          source_url:
-            sourceUrl,
-
-          status_code:
-            r.status,
-
-          acquired_at:
-            acquiredAt,
-
-          request_start_date:
-            startDate,
-
-          request_end_date:
-            endDate,
-
-          request_fingerprint_material:
-            {
-              url:
-                sourceUrl,
-
-              method:
-                "POST",
-
-              params:
-                {
-                  mts:
-                    "USD",
-
-                  startDate,
-
-                  endDate
-                }
-            },
-
-          request_body_sha256:
-            await sha256(body),
-
-          body_bytes:
-            bodyBytes,
-
-          body_sha256:
-            bodySha256,
-
-          content_type:
-            contentType,
-
-          error:
-            "invalid_jisdor_payload",
-
-          reason:
-            looksLikeHtml
-              ? "html_payload"
-
-              : !looksLikeXml
-                ? "non_xml_payload"
-
-                : "jisdor_structure_not_detected",
-
-          body:
-            responseBody.slice(
-              0,
-              4000
-            )
-        },
-        502
-      );
-    }
-
-    if (r.status === 429) {
-      return jsonResponse(
-        {
-          ok: false,
-
-          source_id:
-            "jisdor",
-
-          dataset_id:
-            "JISDOR",
-
-          source_url:
-            sourceUrl,
-
-          status_code:
-            r.status,
-
-          acquired_at:
-            acquiredAt,
-
-          request_start_date:
-            startDate,
-
-          request_end_date:
-            endDate,
-
-          body_bytes:
-            bodyBytes,
-
-          body_sha256:
-            bodySha256,
-
-          content_type:
-            r.headers.get(
-              "content-type"
-            ) || "",
-
-          error:
-            "upstream_rate_limited",
-
-          body:
-            responseBody.slice(
-              0,
-              2000
-            )
-        },
-        429
-      );
-    }
-
-    if (r.status >= 500) {
-      return jsonResponse(
-        {
-          ok: false,
-
-          source_id:
-            "jisdor",
-
-          dataset_id:
-            "JISDOR",
-
-          source_url:
-            sourceUrl,
-
-          status_code:
-            r.status,
-
-          acquired_at:
-            acquiredAt,
-
-          request_start_date:
-            startDate,
-
-          request_end_date:
-            endDate,
-
-          body_bytes:
-            bodyBytes,
-
-          body_sha256:
-            bodySha256,
-
-          content_type:
-            r.headers.get(
-              "content-type"
-            ) || "",
-
-          error:
-            "upstream_server_error",
-
-          body:
-            responseBody.slice(
-              0,
-              2000
-            )
-        },
-        502
-      );
-    }
-
-    return jsonResponse(
-      {
-        ok:
-          r.ok,
-
-        source_id:
-          "jisdor",
-
-        dataset_id:
-          "JISDOR",
-
-        source_url:
-          sourceUrl,
-
-        status_code:
-          r.status,
-
-        acquired_at:
-          acquiredAt,
-
-        request_start_date:
-          startDate,
-
-        request_end_date:
-          endDate,
-
-        request_fingerprint_material:
-          {
-            url:
-              sourceUrl,
-
-            method:
-              "POST",
-
-            params:
-              {
-                mts:
-                  "USD",
-
-                startDate,
-
-                endDate
-              }
-          },
-
-        request_body_sha256:
-          await sha256(body),
-
-        body_bytes:
-          bodyBytes,
-
-        body_sha256:
-          bodySha256,
-
-        content_type:
-          contentType,
-
-        body:
-          responseBody
-      },
-
-      r.ok ? 200 : 502
-    );
-
-  } catch (e) {
-    return jsonResponse(
-      {
-        ok: false,
-
-        source_id:
-          "jisdor",
-
-        dataset_id:
-          "JISDOR",
-
-        source_url:
-          sourceUrl,
-
-        acquired_at:
-          acquiredAt,
-
-        request_start_date:
-          startDate,
-
-        request_end_date:
-          endDate,
-
-        error:
-          "upstream_fetch_failed",
-
-        detail:
-          String(
-            e?.message || e
-          ).slice(0, 1000)
-      },
-      502
-    );
-  }
-}
-
-function validateBlsPayload(
-  sourceId,
-  payload
-) {
-  const expected =
-    BLS_SERIES[sourceId];
-
-  if (
-    !payload ||
-    payload.status !==
-      "REQUEST_SUCCEEDED"
-  ) {
-    return {
-      ok: false,
-
-      reason:
-        "bls_api_status_not_succeeded"
-    };
-  }
-
-  const series =
-    payload?.Results?.series;
-
-  if (
-    !Array.isArray(series) ||
-    series.length !== 1
-  ) {
-    return {
-      ok: false,
-
-      reason:
-        "unexpected_series_shape"
-    };
-  }
-
-  if (
-    series[0]?.seriesID !==
-    expected
-  ) {
-    return {
-      ok: false,
-
-      reason:
-        "unexpected_series_id"
-    };
-  }
-
-  const data =
-    series[0]?.data;
-
-  if (
-    !Array.isArray(data) ||
-    data.length === 0
-  ) {
-    return {
-      ok: false,
-
-      reason:
-        "no_observations"
-    };
-  }
-
-  const currentYear =
-    new Date()
-      .getUTCFullYear();
-
-  const monthly =
-    data.filter(x =>
-      isMonthly(x.period)
-    );
-
-  if (
-    monthly.length === 0
-  ) {
-    return {
-      ok: false,
-
-      reason:
-        "no_monthly_observations"
-    };
-  }
-
-  for (const row of data) {
-    if (
-      !/^\d{4}$/.test(
-        String(row.year)
-      )
-    ) {
-      return {
-        ok: false,
-
-        reason:
-          "invalid_year"
-      };
-    }
-
-    if (
-      Number(row.year) >
-      currentYear
-    ) {
-      return {
-        ok: false,
-
-        reason:
-          "future_year_observation"
-      };
-    }
-  }
-
-  const numericMonthly =
-    monthly
-      .map(row => ({
-        ...row,
-
-        numeric_value:
-          numericValue(
-            row.value
-          )
-      }))
-      .filter(row =>
-        row.numeric_value !==
-        null
-      );
-
-  if (
-    numericMonthly.length === 0
-  ) {
-    return {
-      ok: false,
-
-      reason:
-        "no_numeric_monthly_observations"
-    };
-  }
-
-  const latestRaw =
-    monthly[0];
-
-  const latestNumeric =
-    numericMonthly[0];
-
-  return {
-    ok: true,
-
-    series_id:
-      expected,
-
-    observation_count:
-      monthly.length,
-
-    numeric_observation_count:
-      numericMonthly.length,
-
-    latest_observation_raw:
-      latestRaw,
-
-    latest_numeric_observation:
-      latestNumeric,
-
-    latest_observation_usable:
-      numericValue(
-        latestRaw.value
-      ) !== null
-  };
-}
-
-async function fetchBls(
-  sourceId,
-  env
-) {
-  if (!env.BLS_API_KEY) {
-    return jsonResponse(
-      {
-        ok: false,
-
-        source_id:
-          sourceId,
-
-        error:
-          "missing_bls_api_key"
-      },
-      500
-    );
-  }
-
-  const now =
-    new Date();
-
-  const endYear =
-    now.getUTCFullYear();
-
-  const startYear =
-    endYear - 2;
-
-  const payload = {
-    seriesid:
-      [
-        BLS_SERIES[sourceId]
-      ],
-
-    startyear:
-      String(startYear),
-
-    endyear:
-      String(endYear),
-
-    registrationkey:
-      env.BLS_API_KEY
-  };
-
-  let lastStatus = 0;
-  let lastBody = "";
-
-  for (
-    let attempt = 0;
-    attempt < 3;
-    attempt++
-  ) {
-    const acquiredAt =
-      new Date().toISOString();
-
-    try {
-      const r =
-        await fetch(
-          SOURCES[sourceId],
-          {
-            method:
-              "POST",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-
-              "User-Agent":
-                "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-            },
-
-            body:
-              JSON.stringify(
-                payload
-              )
-          }
-        );
-
-      const body =
-        await r.text();
-
-      lastStatus =
-        r.status;
-
-      lastBody =
-        body;
-
-      if (
-        r.status === 429 ||
-        r.status >= 500
-      ) {
-        if (attempt < 2) {
-          await sleep(
-            attempt === 0
-              ? 1000
-              : 3000
-          );
-
-          continue;
-        }
-      }
-
-      let parsed = null;
-
-      try {
-        parsed =
-          JSON.parse(body);
-      } catch {
-        parsed = null;
-      }
-
-      if (!r.ok) {
-        return jsonResponse(
-          {
-            ok: false,
-
-            source_id:
-              sourceId,
-
-            dataset_id:
-              sourceId,
-
-            source_url:
-              SOURCES[sourceId],
-
-            status_code:
-              r.status,
-
-            acquired_at:
-              acquiredAt,
-
-            body_sha256:
-              await sha256(body),
-
-            content_type:
-              r.headers.get(
-                "content-type"
-              ) || "",
-
-            error:
-              "bls_upstream_http_error",
-
-            upstream_body:
-              body.slice(
-                0,
-                2000
-              )
-          },
-          502
-        );
-      }
-
-      const validation =
-        validateBlsPayload(
-          sourceId,
-          parsed
-        );
-
-      if (!validation.ok) {
-        return jsonResponse(
-          {
-            ok: false,
-
-            source_id:
-              sourceId,
-
-            dataset_id:
-              sourceId,
-
-            source_url:
-              SOURCES[sourceId],
-
-            status_code:
-              r.status,
-
-            acquired_at:
-              acquiredAt,
-
-            body_sha256:
-              await sha256(body),
-
-            content_type:
-              r.headers.get(
-                "content-type"
-              ) || "",
-
-            error:
-              validation.reason,
-
-            upstream_status:
-              parsed?.status ||
-              null,
-
-            upstream_message:
-              parsed?.message ||
-              []
-          },
-          502
-        );
-      }
-
-      return jsonResponse({
-        ok: true,
-
-        source_id:
-          sourceId,
-
-        dataset_id:
-          sourceId,
-
-        series_id:
-          validation.series_id,
-
-        source_url:
-          SOURCES[sourceId],
-
-        status_code:
-          r.status,
-
-        acquired_at:
-          acquiredAt,
-
-        request_start_year:
-          String(startYear),
-
-        request_end_year:
-          String(endYear),
-
-        observation_count:
-          validation.observation_count,
-
-        numeric_observation_count:
-          validation.numeric_observation_count,
-
-        latest_observation_raw:
-          validation.latest_observation_raw,
-
-        latest_numeric_observation:
-          validation.latest_numeric_observation,
-
-        latest_observation_usable:
-          validation.latest_observation_usable,
-
-        body_bytes:
-          new TextEncoder()
-            .encode(body)
-            .length,
-
-        body_sha256:
-          await sha256(body),
-
-        content_type:
-          r.headers.get(
-            "content-type"
-          ) || "",
-
-        body
-      });
-
-    } catch (e) {
-      lastBody =
-        String(
-          e?.message || e
-        );
-
-      if (attempt < 2) {
-        await sleep(
-          attempt === 0
-            ? 1000
-            : 3000
-        );
-
-        continue;
-      }
-    }
-  }
-
-  return jsonResponse(
-    {
-      ok: false,
-
-      source_id:
-        sourceId,
-
-      dataset_id:
-        sourceId,
-
-      source_url:
-        SOURCES[sourceId],
-
-      status_code:
-        lastStatus,
-
-      error:
-        "upstream_fetch_failed_after_retries",
-
-      upstream_body:
-        lastBody.slice(
-          0,
-          2000
-        )
-    },
-    502
-  );
-}
-
-export default {
-  async fetch(req, env) {
-    const u =
-      new URL(req.url);
-
-    if (req.method !== "GET") {
-      return new Response(
-        "Method Not Allowed",
-        {
-          status: 405
-        }
-      );
-    }
-
-    if (
-      u.pathname ===
-      "/health"
-    ) {
-      return jsonResponse({
-        ok: true,
-
-        service:
-          "macro-fuel-relay",
-
-        version:
-          "0.2.13"
-      });
-    }
-
-    if (
-      u.pathname ===
-      "/jisdor_probe_single"
-    ) {
-      if (
-        env.RELAY_TOKEN &&
-        req.headers.get(
-          "Authorization"
-        ) !==
-          `Bearer ${env.RELAY_TOKEN}`
-      ) {
-        return jsonResponse(
-          {
-            ok: false,
-            error:
-              "unauthorized"
-          },
-          401
-        );
-      }
-
-      return probeJisdorSingle(
-        u,
-        env
-      );
-    }
-
-    if (
-      u.pathname ===
-      "/jisdor_probe"
-    ) {
-      if (
-        env.RELAY_TOKEN &&
-        req.headers.get(
-          "Authorization"
-        ) !==
-          `Bearer ${env.RELAY_TOKEN}`
-      ) {
-        return jsonResponse(
-          {
-            ok: false,
-            error:
-              "unauthorized"
-          },
-          401
-        );
-      }
-
-      return probeJisdorDateFormats(
-        u,
-        env
-      );
-    }
-
-    if (
-      u.pathname ===
-      "/jisdor"
-    ) {
-      if (
-        env.RELAY_TOKEN &&
-        req.headers.get(
-          "Authorization"
-        ) !==
-          `Bearer ${env.RELAY_TOKEN}`
-      ) {
-        return jsonResponse(
-          {
-            ok: false,
-            error:
-              "unauthorized"
-          },
-          401
-        );
-      }
-
-      return fetchJisdorBatch(
-        u,
-        env
-      );
-    }
-
-    if (
-      u.pathname ===
-      "/jisdor_probe_structure"
-    ) {
-      if (
-        env.RELAY_TOKEN &&
-        req.headers.get(
-          "Authorization"
-        ) !==
-          `Bearer ${env.RELAY_TOKEN}`
-      ) {
-        return jsonResponse(
-          {
-            ok: false,
-            error:
-              "unauthorized"
-          },
-          401
-        );
-      }
-
-      return probeJisdorStructure(
-        u,
-        env
-      );
-    }
-
-    const sourceId =
-      ROUTES[u.pathname];
-
-    if (!sourceId) {
-      return jsonResponse(
-        {
-          ok: false,
-          error:
-            "route_not_allowed"
-        },
-        404
-      );
-    }
-
-    if (
-      env.RELAY_TOKEN &&
-      req.headers.get(
-        "Authorization"
-      ) !==
-        `Bearer ${env.RELAY_TOKEN}`
-    ) {
-      return jsonResponse(
-        {
-          ok: false,
-          error:
-            "unauthorized"
-        },
-        401
-      );
-    }
-
-    if (
-      sourceId === "bls_cpi" ||
-      sourceId === "bls_employment"
-    ) {
-      return fetchBls(
-        sourceId,
-        env
-      );
-    }
-
-    const url =
-      SOURCES[sourceId];
-
-    const acquiredAt =
-      new Date().toISOString();
-
-    try {
-      const r =
-        await fetch(
-          url,
-          {
-            headers: {
-              "User-Agent":
-                "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-            }
-          }
-        );
-
-      const body =
-        await r.text();
-
-      return jsonResponse(
-        {
-          ok:
-            r.ok,
-
-          source_id:
-            sourceId,
-
-          dataset_id:
-            sourceId,
-
-          source_url:
-            url,
-
-          status_code:
-            r.status,
-
-          acquired_at:
-            acquiredAt,
-
-          body_bytes:
-            new TextEncoder()
-              .encode(body)
-              .length,
-
-          body_sha256:
-            await sha256(body),
-
-          content_type:
-            r.headers.get(
-              "content-type"
-            ) || "",
-
-          body
-        },
-
-        r.ok
-          ? 200
-          : 502
-      );
-
-    } catch (e) {
-      return jsonResponse(
-        {
-          ok: false,
-
-          source_id:
-            sourceId,
-
-          dataset_id:
-            sourceId,
-
-          source_url:
-            url,
-
-          acquired_at:
-            acquiredAt,
-
-          error:
-            "upstream_fetch_failed"
-        },
-        502
-      );
-    }
-  }
-};
+   
