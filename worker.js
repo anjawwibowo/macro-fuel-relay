@@ -61,9 +61,7 @@ function numericValue(value) {
    ============================================================ */
 
 function isValidJisdorDate(value) {
-  if (!/^\d{2}-\d{2}-\d{4}$/.test(String(value))) {
-    return false;
-  }
+  if (!/^\d{2}-\d{2}-\d{4}$/.test(String(value))) return false;
 
   const [dd, mm, yyyy] = String(value).split("-").map(Number);
 
@@ -79,21 +77,6 @@ function isValidJisdorDate(value) {
 function jisdorDateToUtc(value) {
   const [dd, mm, yyyy] = String(value).split("-").map(Number);
   return new Date(Date.UTC(yyyy, mm - 1, dd));
-}
-
-function buildJisdorSoapBody(startDate, endDate) {
-  return `<?xml version="1.0" encoding="utf-8"?>
-<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-               xmlns:xsd="http://www.w3.org/2001/XMLSchema"
-               xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
-  <soap:Body>
-    <getSubKursJisdor3 xmlns="http://tempuri.org/">
-      <mts>USD</mts>
-      <startDate>${startDate}</startDate>
-      <endDate>${endDate}</endDate>
-    </getSubKursJisdor3>
-  </soap:Body>
-</soap:Envelope>`.trim();
 }
 
 async function fetchJisdorBatch(u, env) {
@@ -151,25 +134,25 @@ async function fetchJisdorBatch(u, env) {
   }
 
   const sourceUrl =
-    "https://www.bi.go.id/biwebservice/wskursbi.asmx";
+    "https://www.bi.go.id/biwebservice/wskursbi.asmx/getSubKursJisdor3";
 
-  const soapAction =
-    "http://tempuri.org/getSubKursJisdor3";
+  const body =
+    `mts=${encodeURIComponent("USD")}&startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`;
 
-  const body = buildJisdorSoapBody(
-    startDate,
-    endDate
-  );
-
-  const acquiredAt = new Date().toISOString();
+  const acquiredAt =
+    new Date().toISOString();
 
   try {
     const r = await fetch(sourceUrl, {
       method: "POST",
 
       headers: {
-        "Content-Type": "text/xml; charset=utf-8",
-        "SOAPAction": `"${soapAction}"`,
+        "Content-Type":
+          "application/x-www-form-urlencoded; charset=UTF-8",
+
+        "Accept":
+          "text/xml, application/xml",
+
         "User-Agent":
           "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
       },
@@ -177,97 +160,271 @@ async function fetchJisdorBatch(u, env) {
       body
     });
 
-    const responseBody = await r.text();
+    const responseBody =
+      await r.text();
 
     const bodyBytes =
-      new TextEncoder().encode(responseBody).length;
+      new TextEncoder()
+        .encode(responseBody)
+        .length;
 
     const bodySha256 =
       await sha256(responseBody);
 
-    /* --------------------------------------------------------
-       429
-       -------------------------------------------------------- */
+    const contentType =
+      r.headers.get("content-type") || "";
 
-    if (r.status === 429) {
+    const trimmedBody =
+      responseBody.trim();
+
+    /*
+     * STRICT PAYLOAD DETECTION
+     */
+
+    const looksLikeXml =
+      /^<\?xml[\s\S]*</i.test(trimmedBody) ||
+      /^<DataSet[\s\S]*</i.test(trimmedBody) ||
+      /^<soap:Envelope[\s\S]*</i.test(trimmedBody);
+
+    const looksLikeHtml =
+      /<\s*!doctype\s+html|<\s*html(?:\s|>)/i
+        .test(trimmedBody);
+
+    const looksLikeJisdor =
+      /<DataSet(?:\s|>)/i.test(responseBody) ||
+      /<getSubKursJisdor3Response(?:\s|>)/i
+        .test(responseBody) ||
+      /<(?:Table|tgl_subkursjisdor|nilai_subkursjisdor)(?:\s|>)/i
+        .test(responseBody);
+
+    /*
+     * FAIL CLOSED
+     *
+     * HTTP 200 alone is NOT sufficient evidence.
+     */
+
+    if (
+      r.ok &&
+      (
+        !looksLikeXml ||
+        looksLikeHtml ||
+        !looksLikeJisdor
+      )
+    ) {
       return jsonResponse({
+
         ok: false,
-        source_id: "jisdor",
-        dataset_id: "JISDOR",
-        source_url: sourceUrl,
-        status_code: r.status,
-        acquired_at: acquiredAt,
 
-        request_start_date: startDate,
-        request_end_date: endDate,
+        source_id:
+          "jisdor",
 
-        body_bytes: bodyBytes,
-        body_sha256: bodySha256,
+        dataset_id:
+          "JISDOR",
+
+        source_url:
+          sourceUrl,
+
+        status_code:
+          r.status,
+
+        acquired_at:
+          acquiredAt,
+
+        request_start_date:
+          startDate,
+
+        request_end_date:
+          endDate,
+
+        request_fingerprint_material: {
+
+          url:
+            sourceUrl,
+
+          method:
+            "POST",
+
+          params: {
+            mts:
+              "USD",
+
+            startDate,
+
+            endDate
+          }
+        },
+
+        request_body_sha256:
+          await sha256(body),
+
+        body_bytes:
+          bodyBytes,
+
+        body_sha256:
+          bodySha256,
 
         content_type:
-          r.headers.get("content-type") || "",
+          contentType,
 
-        error: "upstream_rate_limited",
+        error:
+          "invalid_jisdor_payload",
 
-        body: responseBody.slice(0, 2000)
-      }, 429);
-    }
+        reason:
+          looksLikeHtml
+            ? "html_payload"
+            : !looksLikeXml
+              ? "non_xml_payload"
+              : "jisdor_structure_not_detected",
 
-    /* --------------------------------------------------------
-       5xx
-       -------------------------------------------------------- */
+        body:
+          responseBody.slice(0, 4000)
 
-    if (r.status >= 500) {
-      return jsonResponse({
-        ok: false,
-        source_id: "jisdor",
-        dataset_id: "JISDOR",
-        source_url: sourceUrl,
-        status_code: r.status,
-        acquired_at: acquiredAt,
-
-        request_start_date: startDate,
-        request_end_date: endDate,
-
-        body_bytes: bodyBytes,
-        body_sha256: bodySha256,
-
-        content_type:
-          r.headers.get("content-type") || "",
-
-        error: "upstream_server_error",
-
-        body: responseBody.slice(0, 2000)
       }, 502);
     }
 
-    /* --------------------------------------------------------
-       SUCCESS / OTHER HTTP STATUS
-       -------------------------------------------------------- */
+    /*
+     * RATE LIMIT
+     */
+
+    if (r.status === 429) {
+
+      return jsonResponse({
+
+        ok: false,
+
+        source_id:
+          "jisdor",
+
+        dataset_id:
+          "JISDOR",
+
+        source_url:
+          sourceUrl,
+
+        status_code:
+          r.status,
+
+        acquired_at:
+          acquiredAt,
+
+        request_start_date:
+          startDate,
+
+        request_end_date:
+          endDate,
+
+        body_bytes:
+          bodyBytes,
+
+        body_sha256:
+          bodySha256,
+
+        content_type:
+          contentType,
+
+        error:
+          "upstream_rate_limited",
+
+        body:
+          responseBody.slice(0, 2000)
+
+      }, 429);
+    }
+
+    /*
+     * UPSTREAM SERVER ERROR
+     */
+
+    if (r.status >= 500) {
+
+      return jsonResponse({
+
+        ok: false,
+
+        source_id:
+          "jisdor",
+
+        dataset_id:
+          "JISDOR",
+
+        source_url:
+          sourceUrl,
+
+        status_code:
+          r.status,
+
+        acquired_at:
+          acquiredAt,
+
+        request_start_date:
+          startDate,
+
+        request_end_date:
+          endDate,
+
+        body_bytes:
+          bodyBytes,
+
+        body_sha256:
+          bodySha256,
+
+        content_type:
+          contentType,
+
+        error:
+          "upstream_server_error",
+
+        body:
+          responseBody.slice(0, 2000)
+
+      }, 502);
+    }
+
+    /*
+     * SUCCESS
+     */
 
     return jsonResponse({
-      ok: r.ok,
 
-      source_id: "jisdor",
-      dataset_id: "JISDOR",
+      ok:
+        r.ok,
 
-      source_url: sourceUrl,
+      source_id:
+        "jisdor",
 
-      status_code: r.status,
+      dataset_id:
+        "JISDOR",
 
-      acquired_at: acquiredAt,
+      source_url:
+        sourceUrl,
 
-      request_start_date: startDate,
-      request_end_date: endDate,
+      status_code:
+        r.status,
+
+      acquired_at:
+        acquiredAt,
+
+      request_start_date:
+        startDate,
+
+      request_end_date:
+        endDate,
 
       request_fingerprint_material: {
-        url: sourceUrl,
-        method: "POST",
-        soap_action: soapAction,
+
+        url:
+          sourceUrl,
+
+        method:
+          "POST",
 
         params: {
-          mts: "USD",
+
+          mts:
+            "USD",
+
           startDate,
+
           endDate
         }
       },
@@ -275,36 +432,52 @@ async function fetchJisdorBatch(u, env) {
       request_body_sha256:
         await sha256(body),
 
-      body_bytes: bodyBytes,
+      body_bytes:
+        bodyBytes,
 
-      body_sha256: bodySha256,
+      body_sha256:
+        bodySha256,
 
       content_type:
-        r.headers.get("content-type") || "",
+        contentType,
 
-      body: responseBody
+      body:
+        responseBody
 
     }, r.ok ? 200 : 502);
 
   } catch (e) {
 
     return jsonResponse({
-      ok: false,
 
-      source_id: "jisdor",
-      dataset_id: "JISDOR",
+      ok:
+        false,
 
-      source_url: sourceUrl,
+      source_id:
+        "jisdor",
 
-      acquired_at: acquiredAt,
+      dataset_id:
+        "JISDOR",
 
-      request_start_date: startDate,
-      request_end_date: endDate,
+      source_url:
+        sourceUrl,
 
-      error: "upstream_fetch_failed",
+      acquired_at:
+        acquiredAt,
+
+      request_start_date:
+        startDate,
+
+      request_end_date:
+        endDate,
+
+      error:
+        "upstream_fetch_failed",
 
       detail:
-        String(e?.message || e).slice(0, 1000)
+        String(
+          e?.message || e
+        ).slice(0, 1000)
 
     }, 502);
   }
@@ -315,19 +488,24 @@ async function fetchJisdorBatch(u, env) {
    ============================================================ */
 
 function validateBlsPayload(sourceId, payload) {
-  const expected = BLS_SERIES[sourceId];
+
+  const expected =
+    BLS_SERIES[sourceId];
 
   if (
     !payload ||
-    payload.status !== "REQUEST_SUCCEEDED"
+    payload.status !==
+      "REQUEST_SUCCEEDED"
   ) {
     return {
       ok: false,
-      reason: "bls_api_status_not_succeeded"
+      reason:
+        "bls_api_status_not_succeeded"
     };
   }
 
-  const series = payload?.Results?.series;
+  const series =
+    payload?.Results?.series;
 
   if (
     !Array.isArray(series) ||
@@ -335,18 +513,24 @@ function validateBlsPayload(sourceId, payload) {
   ) {
     return {
       ok: false,
-      reason: "unexpected_series_shape"
+      reason:
+        "unexpected_series_shape"
     };
   }
 
-  if (series[0]?.seriesID !== expected) {
+  if (
+    series[0]?.seriesID !==
+      expected
+  ) {
     return {
       ok: false,
-      reason: "unexpected_series_id"
+      reason:
+        "unexpected_series_id"
     };
   }
 
-  const data = series[0]?.data;
+  const data =
+    series[0]?.data;
 
   if (
     !Array.isArray(data) ||
@@ -354,36 +538,50 @@ function validateBlsPayload(sourceId, payload) {
   ) {
     return {
       ok: false,
-      reason: "no_observations"
+      reason:
+        "no_observations"
     };
   }
 
   const currentYear =
-    new Date().getUTCFullYear();
+    new Date()
+      .getUTCFullYear();
 
   const monthly =
-    data.filter(x => isMonthly(x.period));
+    data.filter(
+      x => isMonthly(x.period)
+    );
 
   if (monthly.length === 0) {
     return {
       ok: false,
-      reason: "no_monthly_observations"
+      reason:
+        "no_monthly_observations"
     };
   }
 
   for (const row of data) {
 
-    if (!/^\d{4}$/.test(String(row.year))) {
+    if (
+      !/^\d{4}$/.test(
+        String(row.year)
+      )
+    ) {
       return {
         ok: false,
-        reason: "invalid_year"
+        reason:
+          "invalid_year"
       };
     }
 
-    if (Number(row.year) > currentYear) {
+    if (
+      Number(row.year) >
+        currentYear
+    ) {
       return {
         ok: false,
-        reason: "future_year_observation"
+        reason:
+          "future_year_observation"
       };
     }
   }
@@ -400,7 +598,9 @@ function validateBlsPayload(sourceId, payload) {
           row.numeric_value !== null
       );
 
-  if (numericMonthly.length === 0) {
+  if (
+    numericMonthly.length === 0
+  ) {
     return {
       ok: false,
       reason:
@@ -408,13 +608,19 @@ function validateBlsPayload(sourceId, payload) {
     };
   }
 
-  const latestRaw = monthly[0];
-  const latestNumeric = numericMonthly[0];
+  const latestRaw =
+    monthly[0];
+
+  const latestNumeric =
+    numericMonthly[0];
 
   return {
-    ok: true,
 
-    series_id: expected,
+    ok:
+      true,
+
+    series_id:
+      expected,
 
     observation_count:
       monthly.length,
@@ -429,7 +635,9 @@ function validateBlsPayload(sourceId, payload) {
       latestNumeric,
 
     latest_observation_usable:
-      numericValue(latestRaw.value) !== null
+      numericValue(
+        latestRaw.value
+      ) !== null
   };
 }
 
@@ -437,18 +645,29 @@ function validateBlsPayload(sourceId, payload) {
    BLS FETCH
    ============================================================ */
 
-async function fetchBls(sourceId, env) {
+async function fetchBls(
+  sourceId,
+  env
+) {
 
   if (!env.BLS_API_KEY) {
 
     return jsonResponse({
-      ok: false,
-      source_id: sourceId,
-      error: "missing_bls_api_key"
+
+      ok:
+        false,
+
+      source_id:
+        sourceId,
+
+      error:
+        "missing_bls_api_key"
+
     }, 500);
   }
 
-  const now = new Date();
+  const now =
+    new Date();
 
   const endYear =
     now.getUTCFullYear();
@@ -457,6 +676,7 @@ async function fetchBls(sourceId, env) {
     endYear - 2;
 
   const payload = {
+
     seriesid: [
       BLS_SERIES[sourceId]
     ],
@@ -471,8 +691,11 @@ async function fetchBls(sourceId, env) {
       env.BLS_API_KEY
   };
 
-  let lastStatus = 0;
-  let lastBody = "";
+  let lastStatus =
+    0;
+
+  let lastBody =
+    "";
 
   for (
     let attempt = 0;
@@ -485,23 +708,30 @@ async function fetchBls(sourceId, env) {
 
     try {
 
-      const r = await fetch(
-        SOURCES[sourceId],
-        {
-          method: "POST",
+      const r =
+        await fetch(
+          SOURCES[sourceId],
+          {
 
-          headers: {
-            "Content-Type":
-              "application/json",
+            method:
+              "POST",
 
-            "User-Agent":
-              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-          },
+            headers: {
 
-          body:
-            JSON.stringify(payload)
-        }
-      );
+              "Content-Type":
+                "application/json",
+
+              "User-Agent":
+                "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
+
+            },
+
+            body:
+              JSON.stringify(
+                payload
+              )
+          }
+        );
 
       const body =
         await r.text();
@@ -517,7 +747,9 @@ async function fetchBls(sourceId, env) {
         r.status >= 500
       ) {
 
-        if (attempt < 2) {
+        if (
+          attempt < 2
+        ) {
 
           await sleep(
             attempt === 0
@@ -529,22 +761,32 @@ async function fetchBls(sourceId, env) {
         }
       }
 
-      let parsed = null;
+      let parsed =
+        null;
 
       try {
+
         parsed =
           JSON.parse(body);
+
       } catch {
-        parsed = null;
+
+        parsed =
+          null;
       }
 
       if (!r.ok) {
 
         return jsonResponse({
-          ok: false,
 
-          source_id: sourceId,
-          dataset_id: sourceId,
+          ok:
+            false,
+
+          source_id:
+            sourceId,
+
+          dataset_id:
+            sourceId,
 
           source_url:
             SOURCES[sourceId],
@@ -567,7 +809,10 @@ async function fetchBls(sourceId, env) {
             "bls_upstream_http_error",
 
           upstream_body:
-            body.slice(0, 2000)
+            body.slice(
+              0,
+              2000
+            )
 
         }, 502);
       }
@@ -578,13 +823,20 @@ async function fetchBls(sourceId, env) {
           parsed
         );
 
-      if (!validation.ok) {
+      if (
+        !validation.ok
+      ) {
 
         return jsonResponse({
-          ok: false,
 
-          source_id: sourceId,
-          dataset_id: sourceId,
+          ok:
+            false,
+
+          source_id:
+            sourceId,
+
+          dataset_id:
+            sourceId,
 
           source_url:
             SOURCES[sourceId],
@@ -607,20 +859,26 @@ async function fetchBls(sourceId, env) {
             validation.reason,
 
           upstream_status:
-            parsed?.status || null,
+            parsed?.status ||
+            null,
 
           upstream_message:
-            parsed?.message || []
+            parsed?.message ||
+            []
 
         }, 502);
       }
 
       return jsonResponse({
 
-        ok: true,
+        ok:
+          true,
 
-        source_id: sourceId,
-        dataset_id: sourceId,
+        source_id:
+          sourceId,
+
+        dataset_id:
+          sourceId,
 
         series_id:
           validation.series_id,
@@ -679,7 +937,9 @@ async function fetchBls(sourceId, env) {
           e?.message || e
         );
 
-      if (attempt < 2) {
+      if (
+        attempt < 2
+      ) {
 
         await sleep(
           attempt === 0
@@ -692,10 +952,14 @@ async function fetchBls(sourceId, env) {
 
   return jsonResponse({
 
-    ok: false,
+    ok:
+      false,
 
-    source_id: sourceId,
-    dataset_id: sourceId,
+    source_id:
+      sourceId,
+
+    dataset_id:
+      sourceId,
 
     source_url:
       SOURCES[sourceId],
@@ -707,7 +971,10 @@ async function fetchBls(sourceId, env) {
       "upstream_fetch_failed_after_retries",
 
     upstream_body:
-      lastBody.slice(0, 2000)
+      lastBody.slice(
+        0,
+        2000
+      )
 
   }, 502);
 }
@@ -718,28 +985,37 @@ async function fetchBls(sourceId, env) {
 
 export default {
 
-  async fetch(req, env) {
+  async fetch(
+    req,
+    env
+  ) {
 
     const u =
       new URL(req.url);
 
-    if (req.method !== "GET") {
+    if (
+      req.method !== "GET"
+    ) {
 
       return new Response(
         "Method Not Allowed",
-        { status: 405 }
+        {
+          status: 405
+        }
       );
     }
 
-    /* --------------------------------------------------------
-       HEALTH
-       -------------------------------------------------------- */
+    /* HEALTH */
 
-    if (u.pathname === "/health") {
+    if (
+      u.pathname ===
+        "/health"
+    ) {
 
       return jsonResponse({
 
-        ok: true,
+        ok:
+          true,
 
         service:
           "macro-fuel-relay",
@@ -750,11 +1026,14 @@ export default {
       });
     }
 
-    /* --------------------------------------------------------
-       DEDICATED JISDOR BATCH ROUTE
-       -------------------------------------------------------- */
+    /* ========================================================
+       DEDICATED JISDOR BATCH
+       ======================================================== */
 
-    if (u.pathname === "/jisdor") {
+    if (
+      u.pathname ===
+        "/jisdor"
+    ) {
 
       if (
         env.RELAY_TOKEN &&
@@ -766,8 +1045,11 @@ export default {
 
         return jsonResponse(
           {
-            ok: false,
-            error: "unauthorized"
+            ok:
+              false,
+
+            error:
+              "unauthorized"
           },
           401
         );
@@ -779,9 +1061,7 @@ export default {
       );
     }
 
-    /* --------------------------------------------------------
-       EXISTING FUEL ROUTES
-       -------------------------------------------------------- */
+    /* EXISTING ROUTES */
 
     const sourceId =
       ROUTES[u.pathname];
@@ -790,16 +1070,17 @@ export default {
 
       return jsonResponse(
         {
-          ok: false,
-          error: "route_not_allowed"
+          ok:
+            false,
+
+          error:
+            "route_not_allowed"
         },
         404
       );
     }
 
-    /* --------------------------------------------------------
-       AUTH
-       -------------------------------------------------------- */
+    /* AUTH */
 
     if (
       env.RELAY_TOKEN &&
@@ -811,20 +1092,23 @@ export default {
 
       return jsonResponse(
         {
-          ok: false,
-          error: "unauthorized"
+          ok:
+            false,
+
+          error:
+            "unauthorized"
         },
         401
       );
     }
 
-    /* --------------------------------------------------------
-       BLS
-       -------------------------------------------------------- */
+    /* BLS */
 
     if (
-      sourceId === "bls_cpi" ||
-      sourceId === "bls_employment"
+      sourceId ===
+        "bls_cpi" ||
+      sourceId ===
+        "bls_employment"
     ) {
 
       return fetchBls(
@@ -833,9 +1117,7 @@ export default {
       );
     }
 
-    /* --------------------------------------------------------
-       EXISTING SIMPLE FUEL FETCH
-       -------------------------------------------------------- */
+    /* EXISTING SIMPLE FETCH */
 
     const url =
       SOURCES[sourceId];
@@ -846,23 +1128,23 @@ export default {
     try {
 
       const r =
-        await fetch(url, {
-
-          headers: {
-
-            "User-Agent":
-              "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
-
+        await fetch(
+          url,
+          {
+            headers: {
+              "User-Agent":
+                "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
+            }
           }
-
-        });
+        );
 
       const body =
         await r.text();
 
       return jsonResponse({
 
-        ok: r.ok,
+        ok:
+          r.ok,
 
         source_id:
           sourceId,
@@ -900,7 +1182,8 @@ export default {
 
       return jsonResponse({
 
-        ok: false,
+        ok:
+          false,
 
         source_id:
           sourceId,
