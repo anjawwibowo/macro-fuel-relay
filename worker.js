@@ -150,7 +150,7 @@ async function fetchBls(sourceId, env) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.14"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
         },
         body: JSON.stringify(payload)
       });
@@ -159,33 +159,11 @@ async function fetchBls(sourceId, env) {
       lastStatus = r.status;
       lastBody = body;
 
-      // BLS 429 is a hard rate-limit signal. Do NOT retry it: retrying a
-      // throttled request amplifies the problem and can extend the block.
-      // Preserve the upstream status and Retry-After evidence at the relay
-      // boundary so downstream consumers can distinguish RATE_LIMITED from
-      // transport/environment failure.
-      if (r.status === 429) {
-        const retryAfter = r.headers.get("Retry-After");
-        return jsonResponse({
-          ok: false,
-          source_id: sourceId,
-          dataset_id: sourceId,
-          source_url: SOURCES[sourceId],
-          status_code: 429,
-          upstream_status: 429,
-          acquired_at: acquiredAt,
-          body_sha256: await sha256(body),
-          content_type: r.headers.get("content-type") || "",
-          error: "upstream_rate_limited",
-          retry_after: retryAfter || null,
-          upstream_body: body.slice(0, 2000)
-        }, 429);
-      }
-
-      // Only transient 5xx responses receive bounded retry.
-      if (r.status >= 500 && attempt < 2) {
-        await sleep(attempt === 0 ? 1000 : 3000);
-        continue;
+      if (r.status === 429 || r.status >= 500) {
+        if (attempt < 2) {
+          await sleep(attempt === 0 ? 1000 : 3000);
+          continue;
+        }
       }
 
       let parsed = null;
@@ -206,9 +184,8 @@ async function fetchBls(sourceId, env) {
           body_sha256: await sha256(body),
           content_type: r.headers.get("content-type") || "",
           error: "bls_upstream_http_error",
-          upstream_status: r.status,
           upstream_body: body.slice(0, 2000)
-        }, r.status >= 500 ? 502 : r.status);
+        }, 502);
       }
 
       const validation = validateBlsPayload(sourceId, parsed);
@@ -280,7 +257,7 @@ export default {
       return jsonResponse({
         ok: true,
         service: "macro-fuel-relay",
-        version: "0.2.14"
+        version: "0.2.13"
       });
     }
 
@@ -312,7 +289,7 @@ export default {
     try {
       const r = await fetch(url, {
         headers: {
-          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.14"
+          "User-Agent": "TRADER-SOTOY-MACRO-FUEL-RELAY/0.2.13"
         }
       });
       const body = await r.text();
